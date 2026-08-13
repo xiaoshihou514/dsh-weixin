@@ -52,4 +52,25 @@ describe('ILinkClient', () => {
 
     await expect(client.poll(new AbortController().signal)).rejects.toThrow('getupdates failed (ret=1, errcode=7): denied')
   })
+
+  it('drops a stale context token and retries a reply once', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({
+        ret: 0,
+        msgs: [{
+          message_id: 'message-1',
+          from_user_id: 'user-1',
+          context_token: 'stale',
+          item_list: [{ type: 1, text_item: { text: 'hello' } }],
+        }],
+      }))
+      .mockResolvedValueOnce(response({ ret: 1, errmsg: 'expired context' }))
+      .mockResolvedValueOnce(response({ ret: 0 }))
+    const client = new ILinkClient({ token: 'secret', apiBase: 'https://example.test', fetch })
+    await client.poll(new AbortController().signal)
+
+    await expect(client.sendText('user-1', 'reply')).resolves.toBeUndefined()
+    expect(JSON.parse(String((fetch.mock.calls[1]?.[1] as RequestInit).body)).msg.context_token).toBe('stale')
+    expect(JSON.parse(String((fetch.mock.calls[2]?.[1] as RequestInit).body)).msg.context_token).toBeUndefined()
+  })
 })
