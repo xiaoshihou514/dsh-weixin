@@ -73,4 +73,21 @@ describe('ILinkClient', () => {
     expect(JSON.parse(String((fetch.mock.calls[1]?.[1] as RequestInit).body)).msg.context_token).toBe('stale')
     expect(JSON.parse(String((fetch.mock.calls[2]?.[1] as RequestInit).body)).msg.context_token).toBeUndefined()
   })
+
+  it('restores and publishes cursor state', async () => {
+    const states: unknown[] = []
+    const fetch = vi.fn().mockResolvedValue(response({ ret: 0, get_updates_buf: 'cursor-2', msgs: [] }))
+    const client = new ILinkClient({
+      token: 'secret',
+      apiBase: 'https://example.test',
+      fetch,
+      state: { updatesBuffer: 'cursor-1', contextTokens: { room: 'context-1' } },
+      onStateChange: state => states.push(state),
+    })
+
+    await client.poll(new AbortController().signal)
+
+    expect(JSON.parse(String((fetch.mock.calls[0]?.[1] as RequestInit).body)).get_updates_buf).toBe('cursor-1')
+    expect(states).toEqual([{ updatesBuffer: 'cursor-2', contextTokens: { room: 'context-1' } }])
+  })
 })

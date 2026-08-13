@@ -12,6 +12,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { ILinkClient } from './protocol.js'
 import type { InboundMessage } from './protocol.js'
 import { defaultCredentialPath, pathExists, readCredential } from './files.js'
+import { defaultStatePath, GatewayStateStore, loadGatewayState } from './state.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'weixin'
@@ -23,29 +24,44 @@ export const inject = ['agentDefaultModel', 'agents', 'sessions']
 export interface Config {
   tokenEnv: string
   credentialPath: string
+  statePath: string
   accountId?: string
   apiBase: string
   workspace: string
   allowedUsers: string[]
   allowedGroups: string[]
   retryDelayMs: number
+  maxMessageChars: number
 }
 
 /** Validated plugin configuration. */
 export const Config: z<Config> = z.object({
   tokenEnv: z.string().default('WEIXIN_BOT_TOKEN'),
   credentialPath: z.string().default(defaultCredentialPath()),
+  statePath: z.string().default(defaultStatePath()),
   accountId: z.string(),
   apiBase: z.string().default(''),
   workspace: z.string().required(),
   allowedUsers: z.array(String).default([]),
   allowedGroups: z.array(String).default([]),
   retryDelayMs: z.number().min(100).default(5_000),
+  maxMessageChars: z.number().min(100).max(10_000).default(3_500),
 })
 
 interface ChatState {
   handle: AgentHandle
   sentThroughSeq: number
+  delivery: Promise<void>
+}
+
+/** Split a response without breaking Unicode code points. */
+export function splitText(text: string, limit: number): string[] {
+  const characters = Array.from(text)
+  const chunks: string[] = []
+  for (let offset = 0; offset < characters.length; offset += limit) {
+    chunks.push(characters.slice(offset, offset + limit).join(''))
+  }
+  return chunks
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -83,15 +99,25 @@ class WeixinGateway {
   readonly #ctx: Context
   readonly #config: Config
   readonly #client: ILinkClient
+  readonly #store: GatewayStateStore
   readonly #abort = new AbortController()
   readonly #chats = new Map<string, ChatState>()
   readonly #agentChats = new Map<Agent, string>()
-  readonly #seen = new Set<string>()
+  readonly #seen: Set<string>
 
-  constructor(ctx: Context, config: Config, connection: { token: string; accountId?: string; apiBase: string }) {
+  constructor(ctx: Context, config: Config, connection: { token: string; accountId?: string; apiBase: string }, store: GatewayStateStore) {
     this.#ctx = ctx
     this.#config = config
-    this.#client = new ILinkClient(connection)
+    this.#store = store
+    this.#seen = new Set(store.state.seenMessageIds)
+    this.#client = new ILinkClient({
+      ...connection,
+      state: store.state.protocol,
+      onStateChange: async (state) => {
+        store.state.protocol = state
+        await store.save()
+      },
+    })
   }
 
   start(): void {
@@ -102,9 +128,14 @@ class WeixinGateway {
       if (chatId === undefined) return
       const state = this.#chats.get(chatId)
       if (state === undefined) return
-      const output = assistantText(session.events, state.sentThroughSeq)
-      state.sentThroughSeq = output.seq
-      if (output.text !== '') void this.#send(chatId, output.text)
+      state.delivery = state.delivery
+        .then(async () => {
+          await this.#ctx.sessions.flush(session)
+          await this.#deliver(chatId, state)
+        })
+        .catch((error: unknown) => {
+          if (!this.#abort.signal.aborted) process.stderr.write(`dsh-weixin: delivery failed: ${error instanceof Error ? error.message : String(error)}\n`)
+        })
     })
     void this.#pollLoop()
   }
@@ -114,12 +145,27 @@ class WeixinGateway {
     await Promise.all([...this.#chats.values()].map(async state => { await state.handle.dispose() }))
   }
 
-  async #send(chatId: string, text: string): Promise<void> {
-    try {
-      await this.#client.sendText(chatId, text, this.#abort.signal)
-    } catch (error) {
-      if (!this.#abort.signal.aborted) {
-        process.stderr.write(`dsh-weixin: send failed: ${error instanceof Error ? error.message : String(error)}\n`)
+  async #deliver(chatId: string, state: ChatState): Promise<void> {
+    const output = assistantText(state.handle.agent.session.events, state.sentThroughSeq)
+    if (output.text === '') {
+      state.sentThroughSeq = output.seq
+      return
+    }
+    for (const chunk of splitText(output.text, this.#config.maxMessageChars)) {
+      await this.#sendWithRetry(chatId, chunk)
+    }
+    if (!this.#abort.signal.aborted) state.sentThroughSeq = output.seq
+  }
+
+  async #sendWithRetry(chatId: string, text: string): Promise<void> {
+    while (!this.#abort.signal.aborted) {
+      try {
+        await this.#client.sendText(chatId, text, this.#abort.signal)
+        return
+      } catch (error) {
+        if (this.#abort.signal.aborted) return
+        process.stderr.write(`dsh-weixin: send failed, retrying: ${error instanceof Error ? error.message : String(error)}\n`)
+        await sleep(this.#config.retryDelayMs, this.#abort.signal)
       }
     }
   }
@@ -141,21 +187,23 @@ class WeixinGateway {
     if (message.id !== '') {
       this.#seen.add(message.id)
       if (this.#seen.size > 2_000) this.#seen.delete(this.#seen.values().next().value!)
+      this.#store.state.seenMessageIds = [...this.#seen]
+      await this.#store.save()
     }
     if (!isAllowed(message, this.#config)) return
     if (message.text === '/status') {
       const state = this.#chats.get(message.chatId)
-      await this.#client.sendText(message.chatId, state === undefined ? 'No active dsh session.' : `dsh session is ${state.handle.agent.status}.`, this.#abort.signal)
+      await this.#sendWithRetry(message.chatId, state === undefined ? 'No active dsh session.' : `dsh session is ${state.handle.agent.status}.`)
       return
     }
     if (message.text === '/stop') {
       this.#chats.get(message.chatId)?.handle.agent.cancel({ kind: 'user' })
-      await this.#client.sendText(message.chatId, 'Stop requested.', this.#abort.signal)
+      await this.#sendWithRetry(message.chatId, 'Stop requested.')
       return
     }
     if (message.text === '/new') {
       await this.#dropChat(message.chatId)
-      await this.#client.sendText(message.chatId, 'Started a new dsh session.', this.#abort.signal)
+      await this.#sendWithRetry(message.chatId, 'The next message will start a new dsh session.')
       return
     }
     const state = await this.#chat(message.chatId)
@@ -169,19 +217,42 @@ class WeixinGateway {
     const existing = this.#chats.get(chatId)
     if (existing !== undefined) return existing
     const selection = this.#ctx.agentDefaultModel.currentSelection()
-    const handle = await this.#ctx.agents.create({
-      sessionId: SessionId(`weixin-${randomUUID()}`),
-      meta: { cwd: this.#config.workspace },
-      agentOptions: { provider: selection.provider, model: selection.model },
-      setup: (agentCtx) => {
-        const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-        installModelSelection(agentCtx, selected)
-      },
-    })
-    const state = { handle, sentThroughSeq: handle.agent.session.seq }
+    const setup = (agentCtx: Context): void => {
+      const selected: ModelSelectionRef = { current: selection, assembled: undefined }
+      installModelSelection(agentCtx, selected)
+    }
+    const persistedSession = this.#store.state.chats[chatId]
+    let handle: AgentHandle
+    if (persistedSession !== undefined) {
+      try {
+        handle = await this.#ctx.agents.resume({
+          resumeSessionId: SessionId(persistedSession),
+          agentOptions: { provider: selection.provider, model: selection.model },
+          setup,
+        })
+      } catch (error) {
+        process.stderr.write(`dsh-weixin: could not resume ${persistedSession}; starting a new session: ${error instanceof Error ? error.message : String(error)}\n`)
+        delete this.#store.state.chats[chatId]
+        handle = await this.#createAgent(selection, setup)
+      }
+    } else {
+      handle = await this.#createAgent(selection, setup)
+    }
+    const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve() }
     this.#chats.set(chatId, state)
     this.#agentChats.set(handle.agent, chatId)
+    this.#store.state.chats[chatId] = handle.agent.id
+    await this.#store.save()
     return state
+  }
+
+  async #createAgent(selection: { provider: string; model: string }, setup: (agentCtx: Context) => void): Promise<AgentHandle> {
+    return await this.#ctx.agents.create({
+      sessionId: SessionId(`weixin-${randomUUID()}`),
+      meta: { cwd: this.#config.workspace },
+      agentOptions: selection,
+      setup,
+    })
   }
 
   async #dropChat(chatId: string): Promise<void> {
@@ -189,6 +260,8 @@ class WeixinGateway {
     if (state === undefined) return
     this.#chats.delete(chatId)
     this.#agentChats.delete(state.handle.agent)
+    delete this.#store.state.chats[chatId]
+    await this.#store.save()
     await state.handle.dispose()
   }
 }
@@ -208,11 +281,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       })()
     : undefined
   await ctx.get('loader')?.await()
+  const gatewayState = await loadGatewayState(config.statePath)
   const gateway = new WeixinGateway(ctx, config, {
     token: environmentToken ?? credential!.token,
     accountId: config.accountId ?? credential?.accountId,
     apiBase: config.apiBase || credential?.apiBase || 'https://ilinkai.weixin.qq.com',
-  })
+  }, new GatewayStateStore(config.statePath, gatewayState))
   gateway.start()
   ctx.effect(() => async () => { await gateway.dispose() })
 }

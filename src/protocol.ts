@@ -44,6 +44,14 @@ export interface ILinkClientOptions {
   accountId?: string
   apiBase: string
   fetch?: typeof globalThis.fetch
+  state?: ILinkClientState
+  onStateChange?: (state: ILinkClientState) => Promise<void> | void
+}
+
+/** Poll cursor and conversation tokens safe to persist without credentials. */
+export interface ILinkClientState {
+  updatesBuffer: string
+  contextTokens: Record<string, string>
 }
 
 /** Minimal iLink client for polling and sending plain text. */
@@ -52,8 +60,9 @@ export class ILinkClient {
   readonly #accountId: string
   readonly #apiBase: string
   readonly #fetch: typeof globalThis.fetch
+  readonly #onStateChange: ((state: ILinkClientState) => Promise<void> | void) | undefined
   readonly #contextTokens = new Map<string, string>()
-  #updatesBuffer = ''
+  #updatesBuffer: string
 
   /** Create an iLink protocol client. */
   constructor(options: ILinkClientOptions) {
@@ -61,6 +70,9 @@ export class ILinkClient {
     this.#accountId = options.accountId ?? ''
     this.#apiBase = options.apiBase.replace(/\/$/, '')
     this.#fetch = options.fetch ?? globalThis.fetch
+    this.#updatesBuffer = options.state?.updatesBuffer ?? ''
+    this.#onStateChange = options.onStateChange
+    for (const [chatId, token] of Object.entries(options.state?.contextTokens ?? {})) this.#contextTokens.set(chatId, token)
   }
 
   /** Poll once, waiting on the server until updates are available. */
@@ -70,7 +82,11 @@ export class ILinkClient {
       base_info: { channel_version: CHANNEL_VERSION },
     }, signal)
     this.#assertSuccess(result, 'getupdates')
-    if (result.get_updates_buf !== undefined) this.#updatesBuffer = result.get_updates_buf
+    let stateChanged = false
+    if (result.get_updates_buf !== undefined && result.get_updates_buf !== this.#updatesBuffer) {
+      this.#updatesBuffer = result.get_updates_buf
+      stateChanged = true
+    }
     const messages: InboundMessage[] = []
     for (const message of result.msgs ?? []) {
       const userId = message.from_user_id ?? ''
@@ -87,6 +103,7 @@ export class ILinkClient {
       const chatId = group ? roomId : userId
       if (message.context_token !== undefined && message.context_token !== '') {
         this.#contextTokens.set(chatId, message.context_token)
+        stateChanged = true
       }
       messages.push({
         id: String(message.message_id ?? ''),
@@ -96,6 +113,7 @@ export class ILinkClient {
         text,
       })
     }
+    if (stateChanged) await this.#notifyStateChange()
     return messages
   }
 
@@ -120,8 +138,17 @@ export class ILinkClient {
     } catch (error) {
       if (contextToken === undefined) throw error
       this.#contextTokens.delete(chatId)
+      await this.#notifyStateChange()
       await this.sendText(chatId, text, signal)
     }
+  }
+
+  #state(): ILinkClientState {
+    return { updatesBuffer: this.#updatesBuffer, contextTokens: Object.fromEntries(this.#contextTokens) }
+  }
+
+  async #notifyStateChange(): Promise<void> {
+    await this.#onStateChange?.(this.#state())
   }
 
   async #post<T>(path: string, payload: unknown, signal?: AbortSignal): Promise<T> {
