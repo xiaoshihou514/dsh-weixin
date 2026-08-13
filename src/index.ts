@@ -89,9 +89,9 @@ function assistantText(events: readonly SessionEvent[], afterSeq: number): { tex
   return { text, seq }
 }
 
-function isAllowed(message: InboundMessage, config: Config): boolean {
+export function isAllowed(message: InboundMessage, config: Config): boolean {
   return message.group
-    ? config.allowedGroups.includes(message.chatId)
+    ? config.allowedGroups.includes(message.chatId) && config.allowedUsers.includes(message.userId)
     : config.allowedUsers.includes(message.userId)
 }
 
@@ -137,7 +137,14 @@ class WeixinGateway {
           if (!this.#abort.signal.aborted) process.stderr.write(`dsh-weixin: delivery failed: ${error instanceof Error ? error.message : String(error)}\n`)
         })
     })
-    void this.#pollLoop()
+    void this.#startLoop().catch((error: unknown) => {
+      if (!this.#abort.signal.aborted) process.stderr.write(`dsh-weixin: gateway stopped: ${error instanceof Error ? error.message : String(error)}\n`)
+    })
+  }
+
+  async #startLoop(): Promise<void> {
+    await this.#drainStoredOutbox()
+    await this.#pollLoop()
   }
 
   async dispose(): Promise<void> {
@@ -151,10 +158,32 @@ class WeixinGateway {
       state.sentThroughSeq = output.seq
       return
     }
-    for (const chunk of splitText(output.text, this.#config.maxMessageChars)) {
-      await this.#sendWithRetry(chatId, chunk)
+    this.#store.state.outbox[chatId] = { chunks: splitText(output.text, this.#config.maxMessageChars), next: 0 }
+    await this.#store.save()
+    await this.#drainOutbox(chatId)
+    if (!this.#abort.signal.aborted && this.#store.state.outbox[chatId] === undefined) state.sentThroughSeq = output.seq
+  }
+
+  async #drainStoredOutbox(): Promise<void> {
+    for (const chatId of Object.keys(this.#store.state.outbox)) {
+      if (this.#abort.signal.aborted) return
+      await this.#drainOutbox(chatId)
     }
-    if (!this.#abort.signal.aborted) state.sentThroughSeq = output.seq
+  }
+
+  async #drainOutbox(chatId: string): Promise<void> {
+    const item = this.#store.state.outbox[chatId]
+    if (item === undefined) return
+    while (item.next < item.chunks.length && !this.#abort.signal.aborted) {
+      await this.#sendWithRetry(chatId, item.chunks[item.next]!)
+      if (this.#abort.signal.aborted) return
+      item.next += 1
+      await this.#store.save()
+    }
+    if (item.next === item.chunks.length) {
+      delete this.#store.state.outbox[chatId]
+      await this.#store.save()
+    }
   }
 
   async #sendWithRetry(chatId: string, text: string): Promise<void> {
@@ -268,8 +297,8 @@ class WeixinGateway {
 
 /** Mount the Weixin gateway and tie it to the Cordis lifecycle. */
 export async function apply(ctx: Context, config: Config): Promise<void> {
-  if (config.allowedUsers.length === 0 && config.allowedGroups.length === 0) {
-    throw new Error('dsh-weixin: configure at least one allowed user or group')
+  if (config.allowedUsers.length === 0) {
+    throw new Error('dsh-weixin: configure at least one allowed user')
   }
   const environmentToken = process.env[config.tokenEnv]?.trim()
   const credential = environmentToken === undefined || environmentToken === ''

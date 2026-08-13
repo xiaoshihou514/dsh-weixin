@@ -90,4 +90,29 @@ describe('ILinkClient', () => {
     expect(JSON.parse(String((fetch.mock.calls[0]?.[1] as RequestInit).body)).get_updates_buf).toBe('cursor-1')
     expect(states).toEqual([{ updatesBuffer: 'cursor-2', contextTokens: { room: 'context-1' } }])
   })
+
+  it('normalizes the legacy updates response', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      ret: 0,
+      updates: [{
+        update_type: 'message',
+        message: {
+          message_id: 'legacy-1',
+          chat_id: 'group-1',
+          chat_type: 'group',
+          from: { user_id: 'user-1' },
+          text: 'legacy text',
+        },
+      }],
+    }))
+    const client = new ILinkClient({ token: 'secret', apiBase: 'https://example.test', fetch })
+
+    await expect(client.poll(new AbortController().signal)).resolves.toEqual([{
+      id: 'legacy-1', chatId: 'group-1', userId: 'user-1', group: true, text: 'legacy text',
+    }])
+  })
+
+  it('rejects a non-TLS remote API base', () => {
+    expect(() => new ILinkClient({ token: 'secret', apiBase: 'http://example.test' })).toThrow('must use HTTPS')
+  })
 })

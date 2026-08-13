@@ -27,7 +27,19 @@ interface UpdatesResponse {
   errmsg?: string
   msgs?: ILinkMessage[]
   get_updates_buf?: string
+  updates?: Array<{
+    update_type?: string
+    message?: {
+      message_id?: string | number
+      chat_id?: string
+      chat_type?: string
+      from?: { user_id?: string }
+      text?: string
+    }
+  }>
 }
+
+const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
 /** Normalized inbound text message. */
 export interface InboundMessage {
@@ -46,6 +58,7 @@ export interface ILinkClientOptions {
   fetch?: typeof globalThis.fetch
   state?: ILinkClientState
   onStateChange?: (state: ILinkClientState) => Promise<void> | void
+  requestTimeoutMs?: number
 }
 
 /** Poll cursor and conversation tokens safe to persist without credentials. */
@@ -61,6 +74,7 @@ export class ILinkClient {
   readonly #apiBase: string
   readonly #fetch: typeof globalThis.fetch
   readonly #onStateChange: ((state: ILinkClientState) => Promise<void> | void) | undefined
+  readonly #requestTimeoutMs: number
   readonly #contextTokens = new Map<string, string>()
   #updatesBuffer: string
 
@@ -72,6 +86,11 @@ export class ILinkClient {
     this.#fetch = options.fetch ?? globalThis.fetch
     this.#updatesBuffer = options.state?.updatesBuffer ?? ''
     this.#onStateChange = options.onStateChange
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? 90_000
+    const parsed = new URL(this.#apiBase)
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1'))) {
+      throw new Error('Weixin API base must use HTTPS (HTTP is allowed only for loopback tests)')
+    }
     for (const [chatId, token] of Object.entries(options.state?.contextTokens ?? {})) this.#contextTokens.set(chatId, token)
   }
 
@@ -112,6 +131,15 @@ export class ILinkClient {
         group,
         text,
       })
+    }
+    for (const update of result.updates ?? []) {
+      const message = update.message
+      if (update.update_type !== 'message' || message === undefined) continue
+      const userId = message.from?.user_id ?? ''
+      const chatId = message.chat_id ?? ''
+      const text = message.text?.trim() ?? ''
+      if (userId === '' || userId === this.#accountId || chatId === '' || text === '') continue
+      messages.push({ id: String(message.message_id ?? ''), chatId, userId, group: message.chat_type === 'group', text })
     }
     if (stateChanged) await this.#notifyStateChange()
     return messages
@@ -154,9 +182,12 @@ export class ILinkClient {
   async #post<T>(path: string, payload: unknown, signal?: AbortSignal): Promise<T> {
     const body = JSON.stringify(payload)
     const uin = randomBytes(4).readUInt32BE().toString()
+    const timeout = AbortSignal.timeout(this.#requestTimeoutMs)
+    const requestSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
     const response = await this.#fetch(`${this.#apiBase}${path}`, {
       method: 'POST',
-      signal,
+      signal: requestSignal,
+      redirect: 'error',
       headers: {
         'content-type': 'application/json',
         authorizationtype: 'ilink_bot_token',
@@ -167,8 +198,10 @@ export class ILinkClient {
       },
       body,
     })
-    if (!response.ok) throw new Error(`Weixin HTTP ${response.status}: ${await response.text()}`)
-    return await response.json() as T
+    const responseText = await response.text()
+    if (responseText.length > MAX_RESPONSE_CHARS) throw new Error('Weixin response exceeded 2 MiB')
+    if (!response.ok) throw new Error(`Weixin HTTP ${response.status}: ${responseText.slice(0, 500)}`)
+    return JSON.parse(responseText) as T
   }
 
   #assertSuccess(result: UpdatesResponse, operation: string): void {

@@ -12,6 +12,7 @@ export interface GatewayState {
   chats: Record<string, string>
   seenMessageIds: string[]
   protocol: ILinkClientState
+  outbox: Record<string, { chunks: string[]; next: number }>
 }
 
 /** Default gateway state file under the Harness home. */
@@ -20,7 +21,7 @@ export function defaultStatePath(): string {
 }
 
 function emptyState(): GatewayState {
-  return { version: STATE_VERSION, chats: {}, seenMessageIds: [], protocol: { updatesBuffer: '', contextTokens: {} } }
+  return { version: STATE_VERSION, chats: {}, seenMessageIds: [], protocol: { updatesBuffer: '', contextTokens: {} }, outbox: {} }
 }
 
 function stringRecord(value: unknown, field: string): Record<string, string> {
@@ -53,6 +54,19 @@ export async function loadGatewayState(path: string): Promise<GatewayState> {
       updatesBuffer: protocolRecord.updatesBuffer,
       contextTokens: stringRecord(protocolRecord.contextTokens, 'protocol.contextTokens'),
     },
+    outbox: (() => {
+      if (value.outbox === undefined) return {}
+      if (value.outbox === null || typeof value.outbox !== 'object' || Array.isArray(value.outbox)) throw new Error('gateway state outbox must be an object')
+      const output: GatewayState['outbox'] = {}
+      for (const [chatId, item] of Object.entries(value.outbox)) {
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) throw new Error(`gateway state outbox.${chatId} must be an object`)
+        const record = item as Record<string, unknown>
+        if (!Array.isArray(record.chunks) || record.chunks.some(chunk => typeof chunk !== 'string')) throw new Error(`gateway state outbox.${chatId}.chunks must be strings`)
+        if (!Number.isInteger(record.next) || (record.next as number) < 0 || (record.next as number) > record.chunks.length) throw new Error(`gateway state outbox.${chatId}.next is invalid`)
+        output[chatId] = { chunks: [...record.chunks], next: record.next as number }
+      }
+      return output
+    })(),
   }
 }
 
