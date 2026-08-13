@@ -1,0 +1,10 @@
+- insert:
+    - id: weixin
+      name: dsh-weixin
+      config:
+        tokenEnv: WEIXIN_BOT_TOKEN
+        accountId: !!js process.env.WEIXIN_BOT_ACCOUNT_ID
+        apiBase: !!js process.env.WEIXIN_BOT_API_BASE
+        workspace: !!js process.env.WEIXIN_DSH_WORKSPACE ?? process.cwd()
+        allowedUsers: !!js (process.env.WEIXIN_ALLOWED_USERS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+        allowedGroups: !!js (process.env.WEIXIN_ALLOWED_GROUPS ?? '').split(',').map(value => value.trim()).filter(Boolean)
