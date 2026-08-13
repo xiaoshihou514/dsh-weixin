@@ -11,6 +11,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { ILinkClient } from './protocol.js'
 import type { InboundMessage } from './protocol.js'
+import { defaultCredentialPath, pathExists, readCredential } from './files.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'weixin'
@@ -21,6 +22,7 @@ export const inject = ['agentDefaultModel', 'agents', 'sessions']
 /** Weixin gateway configuration. */
 export interface Config {
   tokenEnv: string
+  credentialPath: string
   accountId?: string
   apiBase: string
   workspace: string
@@ -32,8 +34,9 @@ export interface Config {
 /** Validated plugin configuration. */
 export const Config: z<Config> = z.object({
   tokenEnv: z.string().default('WEIXIN_BOT_TOKEN'),
+  credentialPath: z.string().default(defaultCredentialPath()),
   accountId: z.string(),
-  apiBase: z.string().default('https://ilinkai.weixin.qq.com'),
+  apiBase: z.string().default(''),
   workspace: z.string().required(),
   allowedUsers: z.array(String).default([]),
   allowedGroups: z.array(String).default([]),
@@ -85,10 +88,10 @@ class WeixinGateway {
   readonly #agentChats = new Map<Agent, string>()
   readonly #seen = new Set<string>()
 
-  constructor(ctx: Context, config: Config, token: string) {
+  constructor(ctx: Context, config: Config, connection: { token: string; accountId?: string; apiBase: string }) {
     this.#ctx = ctx
     this.#config = config
-    this.#client = new ILinkClient({ token, accountId: config.accountId, apiBase: config.apiBase })
+    this.#client = new ILinkClient(connection)
   }
 
   start(): void {
@@ -191,13 +194,25 @@ class WeixinGateway {
 }
 
 /** Mount the Weixin gateway and tie it to the Cordis lifecycle. */
-export function apply(ctx: Context, config: Config): void {
-  const token = process.env[config.tokenEnv]
-  if (token === undefined || token.trim() === '') throw new Error(`dsh-weixin: ${config.tokenEnv} is not set`)
+export async function apply(ctx: Context, config: Config): Promise<void> {
   if (config.allowedUsers.length === 0 && config.allowedGroups.length === 0) {
     throw new Error('dsh-weixin: configure at least one allowed user or group')
   }
-  const gateway = new WeixinGateway(ctx, config, token)
+  const environmentToken = process.env[config.tokenEnv]?.trim()
+  const credential = environmentToken === undefined || environmentToken === ''
+    ? await (async () => {
+        if (!await pathExists(config.credentialPath)) {
+          throw new Error(`dsh-weixin: ${config.tokenEnv} is not set and ${config.credentialPath} does not exist; run dsh-weixin login`)
+        }
+        return await readCredential(config.credentialPath)
+      })()
+    : undefined
+  await ctx.get('loader')?.await()
+  const gateway = new WeixinGateway(ctx, config, {
+    token: environmentToken ?? credential!.token,
+    accountId: config.accountId ?? credential?.accountId,
+    apiBase: config.apiBase || credential?.apiBase || 'https://ilinkai.weixin.qq.com',
+  })
   gateway.start()
   ctx.effect(() => async () => { await gateway.dispose() })
 }

@@ -3,6 +3,7 @@
       name: dsh-weixin
       config:
         tokenEnv: WEIXIN_BOT_TOKEN
+        credentialPath: !!js process.env.WEIXIN_CREDENTIAL_PATH
         accountId: !!js process.env.WEIXIN_BOT_ACCOUNT_ID
         apiBase: !!js process.env.WEIXIN_BOT_API_BASE
         workspace: !!js process.env.WEIXIN_DSH_WORKSPACE ?? process.cwd()
