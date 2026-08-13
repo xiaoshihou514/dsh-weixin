@@ -41,6 +41,14 @@ interface UpdatesResponse {
 
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
+/** Validate an iLink API base before credentials can be sent to it. */
+export function validateApiBase(apiBase: string): void {
+  const parsed = new URL(apiBase)
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1'))) {
+    throw new Error('Weixin API base must use HTTPS (HTTP is allowed only for loopback tests)')
+  }
+}
+
 /** Normalized inbound text message. */
 export interface InboundMessage {
   id: string
@@ -87,10 +95,7 @@ export class ILinkClient {
     this.#updatesBuffer = options.state?.updatesBuffer ?? ''
     this.#onStateChange = options.onStateChange
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 90_000
-    const parsed = new URL(this.#apiBase)
-    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1'))) {
-      throw new Error('Weixin API base must use HTTPS (HTTP is allowed only for loopback tests)')
-    }
+    validateApiBase(this.#apiBase)
     for (const [chatId, token] of Object.entries(options.state?.contextTokens ?? {})) this.#contextTokens.set(chatId, token)
   }
 

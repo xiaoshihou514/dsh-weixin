@@ -2,6 +2,22 @@
   "name": "dsh-weixin",
   "version": "0.1.0",
   "description": "Control DeepSeek Harness remotely through Weixin",
+  "keywords": [
+    "deepseek-harness",
+    "weixin",
+    "wechat"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoshihou514/dsh-weixin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaoshihou514/dsh-weixin/issues"
+  },
+  "homepage": "https://github.com/xiaoshihou514/dsh-weixin#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -44,13 +60,22 @@
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.5"
   },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-agent-default-model": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-agent-default-model": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.5",
-    "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^22.20.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

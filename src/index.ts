@@ -3,16 +3,14 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { ILinkClient } from './protocol.js'
 import type { InboundMessage } from './protocol.js'
 import { defaultCredentialPath, pathExists, readCredential } from './files.js'
 import { defaultStatePath, GatewayStateStore, loadGatewayState } from './state.js'
+import { installSelection, sessionId, textUserMessage } from './harness.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'weixin'
@@ -31,6 +29,7 @@ export interface Config {
   allowedUsers: string[]
   allowedGroups: string[]
   retryDelayMs: number
+  emptyPollDelayMs: number
   maxMessageChars: number
 }
 
@@ -45,6 +44,7 @@ export const Config: z<Config> = z.object({
   allowedUsers: z.array(String).default([]),
   allowedGroups: z.array(String).default([]),
   retryDelayMs: z.number().min(100).default(5_000),
+  emptyPollDelayMs: z.number().min(10).default(250),
   maxMessageChars: z.number().min(100).max(10_000).default(3_500),
 })
 
@@ -202,7 +202,9 @@ class WeixinGateway {
   async #pollLoop(): Promise<void> {
     while (!this.#abort.signal.aborted) {
       try {
-        for (const message of await this.#client.poll(this.#abort.signal)) await this.#receive(message)
+        const messages = await this.#client.poll(this.#abort.signal)
+        for (const message of messages) await this.#receive(message)
+        if (messages.length === 0) await sleep(this.#config.emptyPollDelayMs, this.#abort.signal)
       } catch (error) {
         if (this.#abort.signal.aborted) return
         process.stderr.write(`dsh-weixin: ${error instanceof Error ? error.message : String(error)}\n`)
@@ -236,10 +238,7 @@ class WeixinGateway {
       return
     }
     const state = await this.#chat(message.chatId)
-    state.handle.agent.followup(createUserMessage({
-      content: [{ type: 'text', text: message.text }],
-      source: { kind: 'user' },
-    }))
+    state.handle.agent.followup(textUserMessage(message.text))
   }
 
   async #chat(chatId: string): Promise<ChatState> {
@@ -248,14 +247,14 @@ class WeixinGateway {
     const selection = this.#ctx.agentDefaultModel.currentSelection()
     const setup = (agentCtx: Context): void => {
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-      installModelSelection(agentCtx, selected)
+      installSelection(agentCtx, selected)
     }
     const persistedSession = this.#store.state.chats[chatId]
     let handle: AgentHandle
     if (persistedSession !== undefined) {
       try {
         handle = await this.#ctx.agents.resume({
-          resumeSessionId: SessionId(persistedSession),
+          resumeSessionId: sessionId(persistedSession),
           agentOptions: { provider: selection.provider, model: selection.model },
           setup,
         })
@@ -277,7 +276,7 @@ class WeixinGateway {
 
   async #createAgent(selection: { provider: string; model: string }, setup: (agentCtx: Context) => void): Promise<AgentHandle> {
     return await this.#ctx.agents.create({
-      sessionId: SessionId(`weixin-${randomUUID()}`),
+      sessionId: sessionId(`weixin-${randomUUID()}`),
       meta: { cwd: this.#config.workspace },
       agentOptions: selection,
       setup,

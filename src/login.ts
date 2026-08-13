@@ -3,6 +3,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { defaultCredentialPath, writePrivateJson } from './files.js'
 import type { StoredCredential } from './files.js'
+import { validateApiBase } from './protocol.js'
 
 const DEFAULT_API_BASE = 'https://ilinkai.weixin.qq.com'
 const APP_ID = 'bot'
@@ -24,15 +25,21 @@ interface LoginOptions {
 }
 
 async function getJson(fetch: typeof globalThis.fetch, apiBase: string, path: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  validateApiBase(apiBase)
+  const timeout = AbortSignal.timeout(30_000)
+  const requestSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
   const response = await fetch(`${apiBase.replace(/\/$/, '')}${path}`, {
-    signal,
+    signal: requestSignal,
+    redirect: 'error',
     headers: {
       'ilink-app-id': APP_ID,
       'ilink-app-clientversion': String(CLIENT_VERSION),
     },
   })
-  if (!response.ok) throw new Error(`Weixin login HTTP ${response.status}: ${await response.text()}`)
-  const value: unknown = await response.json()
+  const responseText = await response.text()
+  if (responseText.length > 2 * 1024 * 1024) throw new Error('Weixin login response exceeded 2 MiB')
+  if (!response.ok) throw new Error(`Weixin login HTTP ${response.status}: ${responseText.slice(0, 500)}`)
+  const value: unknown = JSON.parse(responseText)
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Weixin login returned a non-object response')
   return value as Record<string, unknown>
 }
