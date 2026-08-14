@@ -13,16 +13,21 @@ export function sessionId(value: string): SessionId {
 
 /** Create the immutable user message accepted by an Agent inbox. */
 export function textUserMessage(text: string): UserMessage {
+  return contentUserMessage([{ type: 'text', text }])
+}
+
+/** Create an immutable user message containing provider-neutral text/image blocks. */
+export function contentUserMessage(content: UserMessage['content']): UserMessage {
   return Object.freeze({
     id: randomUUID() as UserMessage['id'],
     role: 'user',
-    content: Object.freeze([Object.freeze({ type: 'text', text })]),
+    content: Object.freeze(content.map(block => Object.freeze(block))),
     source: Object.freeze({ kind: 'user' }),
   }) as unknown as UserMessage
 }
 
 /** Install one model selection into a newly created Agent scope. */
-export function installSelection(agentCtx: Context, selection: ModelSelectionRef): () => void {
+export function installSelection(agentCtx: Context, selection: ModelSelectionRef, extraInstructions?: string): () => void {
   const disposeAssembly = agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const selected = selection.current
     const assembled = await next()
@@ -30,6 +35,9 @@ export function installSelection(agentCtx: Context, selection: ModelSelectionRef
     if (selected === undefined) return assembled
     return {
       ...assembled,
+      sections: extraInstructions === undefined
+        ? assembled.sections
+        : [...assembled.sections, { name: 'weixin:delivery', text: extraInstructions }],
       variables: { ...assembled.variables, provider: selected.provider, model: selected.model },
     }
   })

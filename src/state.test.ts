@@ -13,7 +13,7 @@ describe('gateway state', () => {
     state.chats.room = 'session-1'
     state.protocol.updatesBuffer = 'cursor-1'
     state.protocol.contextTokens.room = 'context-1'
-    state.outbox.room = { chunks: ['reply'], next: 0 }
+    state.outbox.room = { chunks: ['reply'], files: [], next: 0, nextFile: 0 }
     await store.save()
 
     await expect(loadGatewayState(path)).resolves.toEqual(state)

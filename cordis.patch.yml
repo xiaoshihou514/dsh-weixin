@@ -7,6 +7,9 @@
         statePath: !!js process.env.WEIXIN_STATE_PATH
         accountId: !!js process.env.WEIXIN_BOT_ACCOUNT_ID
         apiBase: !!js process.env.WEIXIN_BOT_API_BASE
+        cdnBase: !!js process.env.WEIXIN_CDN_BASE
         workspace: !!js process.env.WEIXIN_DSH_WORKSPACE ?? process.cwd()
+        mediaDir: !!js process.env.WEIXIN_MEDIA_DIR
         allowedUsers: !!js (process.env.WEIXIN_ALLOWED_USERS ?? '').split(',').map(value => value.trim()).filter(Boolean)
         allowedGroups: !!js (process.env.WEIXIN_ALLOWED_GROUPS ?? '').split(',').map(value => value.trim()).filter(Boolean)
+        maxMediaBytes: !!js Number(process.env.WEIXIN_MAX_MEDIA_BYTES) || undefined

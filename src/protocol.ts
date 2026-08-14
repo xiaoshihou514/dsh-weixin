@@ -1,6 +1,18 @@
 /** Weixin iLink HTTP protocol client. */
 
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import {
+  classifyOutbound,
+  decryptMedia,
+  encryptMedia,
+  mediaTypeForName,
+  paddedSize,
+  safeFileName,
+  uploadMediaType,
+  type InboundMedia,
+  type MediaKind,
+  type WireMediaItem,
+} from './media.js'
 
 const CHANNEL_VERSION = '2.2.0'
 const CLIENT_VERSION = (2 << 16) | (2 << 8)
@@ -8,6 +20,10 @@ const CLIENT_VERSION = (2 << 16) | (2 << 8)
 interface ILinkTextItem {
   type: number
   text_item?: { text?: string }
+  image_item?: WireMediaItem['image_item']
+  voice_item?: WireMediaItem['voice_item']
+  file_item?: WireMediaItem['file_item']
+  video_item?: WireMediaItem['video_item']
 }
 
 interface ILinkMessage {
@@ -39,6 +55,15 @@ interface UpdatesResponse {
   }>
 }
 
+interface UploadResponse extends UpdatesResponse {
+  upload_param?: string
+  upload_full_url?: string
+}
+
+interface ConfigResponse extends UpdatesResponse {
+  typing_ticket?: string
+}
+
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
 
 /** Validate an iLink API base before credentials can be sent to it. */
@@ -56,6 +81,8 @@ export interface InboundMessage {
   userId: string
   group: boolean
   text: string
+  media: InboundMedia[]
+  mediaErrors: string[]
 }
 
 /** Configuration needed by the iLink client. */
@@ -67,6 +94,8 @@ export interface ILinkClientOptions {
   state?: ILinkClientState
   onStateChange?: (state: ILinkClientState) => Promise<void> | void
   requestTimeoutMs?: number
+  cdnBase?: string
+  maxMediaBytes?: number
 }
 
 /** Poll cursor and conversation tokens safe to persist without credentials. */
@@ -83,6 +112,8 @@ export class ILinkClient {
   readonly #fetch: typeof globalThis.fetch
   readonly #onStateChange: ((state: ILinkClientState) => Promise<void> | void) | undefined
   readonly #requestTimeoutMs: number
+  readonly #cdnBase: string
+  readonly #maxMediaBytes: number
   readonly #contextTokens = new Map<string, string>()
   #updatesBuffer: string
 
@@ -95,7 +126,10 @@ export class ILinkClient {
     this.#updatesBuffer = options.state?.updatesBuffer ?? ''
     this.#onStateChange = options.onStateChange
     this.#requestTimeoutMs = options.requestTimeoutMs ?? 90_000
+    this.#cdnBase = (options.cdnBase ?? 'https://novac2c.cdn.weixin.qq.com/c2c').replace(/\/$/, '')
+    this.#maxMediaBytes = options.maxMediaBytes ?? 100 * 1024 * 1024
     validateApiBase(this.#apiBase)
+    validateApiBase(this.#cdnBase)
     for (const [chatId, token] of Object.entries(options.state?.contextTokens ?? {})) this.#contextTokens.set(chatId, token)
   }
 
@@ -111,6 +145,10 @@ export class ILinkClient {
       this.#updatesBuffer = result.get_updates_buf
       stateChanged = true
     }
+    if (stateChanged) {
+      await this.#notifyStateChange()
+      stateChanged = false
+    }
     const messages: InboundMessage[] = []
     for (const message of result.msgs ?? []) {
       const userId = message.from_user_id ?? ''
@@ -121,7 +159,8 @@ export class ILinkClient {
         .filter(Boolean)
         .join('\n')
         .trim()
-      if (text === '') continue
+      const downloaded = await this.#downloadItems(message.item_list ?? [], signal)
+      if (text === '' && downloaded.media.length === 0 && downloaded.errors.length === 0) continue
       const roomId = message.room_id || message.chat_room_id
       const group = roomId !== undefined && roomId !== ''
       const chatId = group ? roomId : userId
@@ -135,6 +174,8 @@ export class ILinkClient {
         userId,
         group,
         text,
+        media: downloaded.media,
+        mediaErrors: downloaded.errors,
       })
     }
     for (const update of result.updates ?? []) {
@@ -144,7 +185,7 @@ export class ILinkClient {
       const chatId = message.chat_id ?? ''
       const text = message.text?.trim() ?? ''
       if (userId === '' || userId === this.#accountId || chatId === '' || text === '') continue
-      messages.push({ id: String(message.message_id ?? ''), chatId, userId, group: message.chat_type === 'group', text })
+      messages.push({ id: String(message.message_id ?? ''), chatId, userId, group: message.chat_type === 'group', text, media: [], mediaErrors: [] })
     }
     if (stateChanged) await this.#notifyStateChange()
     return messages
@@ -152,13 +193,75 @@ export class ILinkClient {
 
   /** Send one plain-text response to a conversation. */
   async sendText(chatId: string, text: string, signal?: AbortSignal): Promise<void> {
+    await this.#sendItems(chatId, [{ type: 1, text_item: { text } }], signal)
+  }
+
+  /** Send or clear Weixin's typing indicator using the required per-chat ticket. */
+  async sendTyping(chatId: string, typing: boolean, signal?: AbortSignal): Promise<void> {
+    const typingTimeout = AbortSignal.timeout(Math.min(this.#requestTimeoutMs, 5_000))
+    const requestSignal = signal === undefined ? typingTimeout : AbortSignal.any([signal, typingTimeout])
+    const contextToken = this.#contextTokens.get(chatId)
+    const config = await this.#post<ConfigResponse>('/ilink/bot/getconfig', {
+      ilink_user_id: chatId,
+      ...(contextToken === undefined ? {} : { context_token: contextToken }),
+      base_info: { channel_version: CHANNEL_VERSION },
+    }, requestSignal)
+    this.#assertSuccess(config, 'getconfig')
+    if (config.typing_ticket === undefined || config.typing_ticket === '') throw new Error('getconfig omitted typing_ticket')
+    const result = await this.#post<UpdatesResponse>('/ilink/bot/sendtyping', {
+      ilink_user_id: chatId,
+      typing_ticket: config.typing_ticket,
+      status: typing ? 1 : 2,
+      base_info: { channel_version: CHANNEL_VERSION },
+    }, requestSignal)
+    this.#assertSuccess(result, 'sendtyping')
+  }
+
+  /** Encrypt, upload, and send one local attachment through the native Weixin media path. */
+  async sendMedia(chatId: string, name: string, data: Uint8Array, signal?: AbortSignal): Promise<void> {
+    if (data.byteLength > this.#maxMediaBytes) throw new Error(`Weixin media exceeds ${this.#maxMediaBytes} bytes`)
+    const kind = classifyOutbound(name)
+    const filekey = randomBytes(16).toString('hex')
+    const key = randomBytes(16)
+    const ciphertext = encryptMedia(data, key)
+    const upload = await this.#post<UploadResponse>('/ilink/bot/getuploadurl', {
+      filekey,
+      media_type: uploadMediaType(kind),
+      to_user_id: chatId,
+      rawsize: data.byteLength,
+      rawfilemd5: createHash('md5').update(data).digest('hex'),
+      filesize: paddedSize(data.byteLength),
+      no_need_thumb: true,
+      aeskey: key.toString('hex'),
+      base_info: { channel_version: CHANNEL_VERSION },
+    }, signal)
+    this.#assertSuccess(upload, 'getuploadurl')
+    const uploadUrl = upload.upload_full_url?.trim() || (upload.upload_param === undefined ? '' : `${this.#cdnBase}/upload?encrypted_query_param=${encodeURIComponent(upload.upload_param)}&filekey=${encodeURIComponent(filekey)}`)
+    if (uploadUrl === '') throw new Error('getuploadurl did not return an upload URL')
+    this.#validateMediaUrl(uploadUrl)
+    const response = await this.#fetch(uploadUrl, {
+      method: 'POST', signal, redirect: 'error', headers: { 'content-type': 'application/octet-stream' }, body: new Uint8Array(ciphertext),
+    })
+    if (!response.ok) throw new Error(`Weixin CDN upload failed with HTTP ${response.status}`)
+    const downloadParam = response.headers.get('x-encrypted-param')
+    if (downloadParam === null || downloadParam === '') throw new Error('Weixin CDN upload omitted x-encrypted-param')
+    const media = { encrypt_query_param: downloadParam, aes_key: Buffer.from(key.toString('hex')).toString('base64'), encrypt_type: 1 }
+    const item = kind === 'image'
+      ? { type: 2, image_item: { media, mid_size: ciphertext.byteLength } }
+      : kind === 'video'
+        ? { type: 5, video_item: { media, video_size: ciphertext.byteLength } }
+        : { type: 4, file_item: { media, file_name: safeFileName(name, 'file.bin'), len: String(data.byteLength) } }
+    await this.#sendItems(chatId, [item], signal)
+  }
+
+  async #sendItems(chatId: string, items: unknown[], signal?: AbortSignal): Promise<void> {
     const msg: Record<string, unknown> = {
       from_user_id: '',
       to_user_id: chatId,
       client_id: `dsh-${randomUUID()}`,
       message_type: 2,
       message_state: 2,
-      item_list: [{ type: 1, text_item: { text } }],
+      item_list: items,
     }
     const contextToken = this.#contextTokens.get(chatId)
     if (contextToken !== undefined) msg.context_token = contextToken
@@ -172,7 +275,47 @@ export class ILinkClient {
       if (contextToken === undefined) throw error
       this.#contextTokens.delete(chatId)
       await this.#notifyStateChange()
-      await this.sendText(chatId, text, signal)
+      await this.#sendItems(chatId, items, signal)
+    }
+  }
+
+  async #downloadItems(items: ILinkTextItem[], signal: AbortSignal): Promise<{ media: InboundMedia[]; errors: string[] }> {
+    const output: InboundMedia[] = []
+    const errors: string[] = []
+    for (const item of items) {
+      const spec = item.type === 2 ? { kind: 'image' as const, ref: item.image_item?.media, key: item.image_item?.aeskey === undefined ? item.image_item?.media?.aes_key : Buffer.from(item.image_item.aeskey, 'hex').toString('base64'), name: 'image.jpg' }
+        : item.type === 3 ? { kind: 'voice' as const, ref: item.voice_item?.media, key: item.voice_item?.media?.aes_key, name: 'voice.silk' }
+          : item.type === 4 ? { kind: 'file' as const, ref: item.file_item?.media, key: item.file_item?.media?.aes_key, name: safeFileName(item.file_item?.file_name ?? '', 'file.bin') }
+            : item.type === 5 ? { kind: 'video' as const, ref: item.video_item?.media, key: item.video_item?.media?.aes_key, name: 'video.mp4' }
+              : undefined
+      if (spec === undefined || spec.ref === undefined) continue
+      try {
+        if (spec.key === undefined) throw new Error('media AES key is missing')
+        const url = spec.ref.full_url?.trim() || (spec.ref.encrypt_query_param === undefined ? '' : `${this.#cdnBase}/download?encrypted_query_param=${encodeURIComponent(spec.ref.encrypt_query_param)}`)
+        if (url === '') throw new Error('media download URL is missing')
+        this.#validateMediaUrl(url)
+        const response = await this.#fetch(url, { signal, redirect: 'error' })
+        if (!response.ok) throw new Error(`CDN download failed with HTTP ${response.status}`)
+        const declared = Number(response.headers.get('content-length') ?? 0)
+        if (declared > this.#maxMediaBytes + 16) throw new Error(`media exceeds ${this.#maxMediaBytes} bytes`)
+        const encrypted = new Uint8Array(await response.arrayBuffer())
+        if (encrypted.byteLength > this.#maxMediaBytes + 16) throw new Error(`media exceeds ${this.#maxMediaBytes} bytes`)
+        const data = decryptMedia(encrypted, spec.key)
+        if (data.byteLength > this.#maxMediaBytes) throw new Error(`media exceeds ${this.#maxMediaBytes} bytes`)
+        output.push({ kind: spec.kind, name: spec.name, mediaType: mediaTypeForName(spec.name, spec.kind), data })
+      } catch (error) {
+        if (signal.aborted) throw error
+        errors.push(`${spec.name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return { media: output, errors }
+  }
+
+  #validateMediaUrl(value: string): void {
+    const parsed = new URL(value)
+    const cdn = new URL(this.#cdnBase)
+    if (parsed.protocol !== cdn.protocol || parsed.hostname !== cdn.hostname || parsed.port !== cdn.port) {
+      throw new Error('Weixin media URL is outside the configured CDN origin')
     }
   }
 

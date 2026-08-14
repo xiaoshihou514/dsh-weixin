@@ -6,11 +6,15 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import { ILinkClient } from './protocol.js'
 import type { InboundMessage } from './protocol.js'
 import { defaultCredentialPath, pathExists, readCredential } from './files.js'
 import { defaultStatePath, GatewayStateStore, loadGatewayState } from './state.js'
-import { installSelection, sessionId, textUserMessage } from './harness.js'
+import { contentUserMessage, installSelection, sessionId } from './harness.js'
+import { extractFileDirectives, resolveWorkspaceFile, saveInboundMedia } from './media.js'
+import { mountLoginRoute } from './web-route.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'weixin'
@@ -25,12 +29,15 @@ export interface Config {
   statePath: string
   accountId?: string
   apiBase: string
+  cdnBase: string
   workspace: string
+  mediaDir: string
   allowedUsers: string[]
   allowedGroups: string[]
   retryDelayMs: number
   emptyPollDelayMs: number
   maxMessageChars: number
+  maxMediaBytes: number
 }
 
 /** Validated plugin configuration. */
@@ -40,18 +47,22 @@ export const Config: z<Config> = z.object({
   statePath: z.string().default(defaultStatePath()),
   accountId: z.string(),
   apiBase: z.string().default(''),
+  cdnBase: z.string().default('https://novac2c.cdn.weixin.qq.com/c2c'),
   workspace: z.string().required(),
+  mediaDir: z.string().default(''),
   allowedUsers: z.array(String).default([]),
   allowedGroups: z.array(String).default([]),
   retryDelayMs: z.number().min(100).default(5_000),
   emptyPollDelayMs: z.number().min(10).default(250),
   maxMessageChars: z.number().min(100).max(10_000).default(3_500),
+  maxMediaBytes: z.number().min(1_024).max(512 * 1024 * 1024).default(100 * 1024 * 1024),
 })
 
 interface ChatState {
   handle: AgentHandle
   sentThroughSeq: number
   delivery: Promise<void>
+  typing: Promise<void>
 }
 
 /** Split a response without breaking Unicode code points. */
@@ -117,10 +128,21 @@ class WeixinGateway {
         store.state.protocol = state
         await store.save()
       },
+      cdnBase: config.cdnBase,
+      maxMediaBytes: config.maxMediaBytes,
     })
   }
 
   start(): void {
+    this.#ctx.on('agent/disposed', ({ agent }) => {
+      const chatId = this.#agentChats.get(agent)
+      if (chatId === undefined) return
+      this.#agentChats.delete(agent)
+      const state = this.#chats.get(chatId)
+      if (state?.handle.agent === agent) this.#chats.delete(chatId)
+      // Keep the durable chat -> session mapping. The next inbound message
+      // attaches to a new Web-owned instance or resumes the persisted session.
+    })
     this.#ctx.on('session/event', (session, event) => {
       if (event.type !== 'turn/end') return
       const agent = this.#ctx.agents.get(session.id)
@@ -153,12 +175,16 @@ class WeixinGateway {
   }
 
   async #deliver(chatId: string, state: ChatState): Promise<void> {
+    await state.typing
+    void this.#client.sendTyping(chatId, false, this.#abort.signal).catch(() => undefined)
     const output = assistantText(state.handle.agent.session.events, state.sentThroughSeq)
     if (output.text === '') {
       state.sentThroughSeq = output.seq
       return
     }
-    this.#store.state.outbox[chatId] = { chunks: splitText(output.text, this.#config.maxMessageChars), next: 0 }
+    const delivery = extractFileDirectives(output.text)
+    const chunks = delivery.text === '' ? [] : splitText(delivery.text, this.#config.maxMessageChars)
+    this.#store.state.outbox[chatId] = { chunks, files: delivery.files, next: 0, nextFile: 0 }
     await this.#store.save()
     await this.#drainOutbox(chatId)
     if (!this.#abort.signal.aborted && this.#store.state.outbox[chatId] === undefined) state.sentThroughSeq = output.seq
@@ -180,9 +206,36 @@ class WeixinGateway {
       item.next += 1
       await this.#store.save()
     }
-    if (item.next === item.chunks.length) {
+    while (item.nextFile < item.files.length && !this.#abort.signal.aborted) {
+      const requested = item.files[item.nextFile]!
+      try {
+        const file = await resolveWorkspaceFile(this.#config.workspace, requested, this.#config.maxMediaBytes)
+        await this.#sendMediaWithRetry(chatId, file.name, file.bytes)
+      } catch (error) {
+        if (this.#abort.signal.aborted) return
+        process.stderr.write(`dsh-weixin: rejected outbound file ${JSON.stringify(requested)}: ${error instanceof Error ? error.message : String(error)}\n`)
+        await this.#sendWithRetry(chatId, `I couldn't send the requested file ${JSON.stringify(requested)} because it is unavailable, outside the workspace, or too large.`)
+      }
+      if (this.#abort.signal.aborted) return
+      item.nextFile += 1
+      await this.#store.save()
+    }
+    if (item.next === item.chunks.length && item.nextFile === item.files.length) {
       delete this.#store.state.outbox[chatId]
       await this.#store.save()
+    }
+  }
+
+  async #sendMediaWithRetry(chatId: string, name: string, data: Uint8Array): Promise<void> {
+    while (!this.#abort.signal.aborted) {
+      try {
+        await this.#client.sendMedia(chatId, name, data, this.#abort.signal)
+        return
+      } catch (error) {
+        if (this.#abort.signal.aborted) return
+        process.stderr.write(`dsh-weixin: media send failed, retrying: ${error instanceof Error ? error.message : String(error)}\n`)
+        await sleep(this.#config.retryDelayMs, this.#abort.signal)
+      }
     }
   }
 
@@ -238,7 +291,29 @@ class WeixinGateway {
       return
     }
     const state = await this.#chat(message.chatId)
-    state.handle.agent.followup(textUserMessage(message.text))
+    const blocks: Parameters<typeof contentUserMessage>[0] = []
+    if (message.text !== '') blocks.push({ type: 'text', text: message.text })
+    const paths: string[] = []
+    const mediaRoot = this.#config.mediaDir || `${this.#config.workspace}/.dsh-weixin/inbox`
+    for (const media of message.media) {
+      const path = await saveInboundMedia(mediaRoot, message.chatId, media)
+      paths.push(path)
+      if (media.kind === 'image') {
+        const attachments = this.#ctx.get('attachments')
+        if (attachments !== undefined && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(media.mediaType)) {
+          try {
+            const attachment = await attachments.saveImage({ data: media.data, mediaType: media.mediaType as 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', name: media.name })
+            blocks.push({ type: 'image', attachment })
+          } catch (error) {
+            process.stderr.write(`dsh-weixin: image attachment storage failed, using local file: ${error instanceof Error ? error.message : String(error)}\n`)
+          }
+        }
+      }
+    }
+    if (message.mediaErrors.length > 0) blocks.push({ type: 'text', text: `Some Weixin attachments could not be received:\n${message.mediaErrors.map(error => `- ${error}`).join('\n')}` })
+    if (paths.length > 0) blocks.push({ type: 'text', text: `Weixin attachments saved in the workspace:\n${paths.map(path => `- ${path}`).join('\n')}` })
+    state.typing = this.#client.sendTyping(message.chatId, true, this.#abort.signal).catch(() => undefined)
+    state.handle.agent.followup(contentUserMessage(blocks))
   }
 
   async #chat(chatId: string): Promise<ChatState> {
@@ -247,26 +322,39 @@ class WeixinGateway {
     const selection = this.#ctx.agentDefaultModel.currentSelection()
     const setup = (agentCtx: Context): void => {
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-      installSelection(agentCtx, selected)
+      installSelection(agentCtx, selected, [
+        'This session is connected to a Weixin chat and is visible in the Harness web UI.',
+        'Files received from Weixin are saved in the workspace and listed by absolute path in the user message.',
+        'To send a workspace file back to Weixin, put this directive on its own line in your final response: [[send-file:relative/or/absolute/path]].',
+        'Only request a file delivery when the user asked for it or it is clearly necessary. The directive is removed from the text delivered to Weixin.',
+      ].join('\n'))
     }
     const persistedSession = this.#store.state.chats[chatId]
     let handle: AgentHandle
     if (persistedSession !== undefined) {
-      try {
-        handle = await this.#ctx.agents.resume({
-          resumeSessionId: sessionId(persistedSession),
-          agentOptions: { provider: selection.provider, model: selection.model },
-          setup,
-        })
-      } catch (error) {
-        process.stderr.write(`dsh-weixin: could not resume ${persistedSession}; starting a new session: ${error instanceof Error ? error.message : String(error)}\n`)
-        delete this.#store.state.chats[chatId]
-        handle = await this.#createAgent(selection, setup)
+      const active = this.#ctx.agents.get(sessionId(persistedSession))
+      if (active !== undefined) {
+        // The Web UI or another root consumer may already own this top-level
+        // agent. Attach without acquiring its teardown capability: /new and
+        // plugin unload must not destroy a session owned elsewhere.
+        handle = { agent: active, dispose: () => Promise.resolve() }
+      } else {
+        try {
+          handle = await this.#ctx.agents.resume({
+            resumeSessionId: sessionId(persistedSession),
+            agentOptions: { provider: selection.provider, model: selection.model },
+            setup,
+          })
+        } catch (error) {
+          process.stderr.write(`dsh-weixin: could not resume ${persistedSession}; starting a new session: ${error instanceof Error ? error.message : String(error)}\n`)
+          delete this.#store.state.chats[chatId]
+          handle = await this.#createAgent(selection, setup)
+        }
       }
     } else {
       handle = await this.#createAgent(selection, setup)
     }
-    const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve() }
+    const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve(), typing: Promise.resolve() }
     this.#chats.set(chatId, state)
     this.#agentChats.set(handle.agent, chatId)
     this.#store.state.chats[chatId] = handle.agent.id
@@ -285,38 +373,39 @@ class WeixinGateway {
 
   async #dropChat(chatId: string): Promise<void> {
     const state = this.#chats.get(chatId)
+    delete this.#store.state.chats[chatId]
+    await this.#store.save()
     if (state === undefined) return
     this.#chats.delete(chatId)
     this.#agentChats.delete(state.handle.agent)
-    delete this.#store.state.chats[chatId]
-    await this.#store.save()
     await state.handle.dispose()
   }
 }
 
 /** Mount the Weixin gateway and tie it to the Cordis lifecycle. */
 export async function apply(ctx: Context, config: Config): Promise<void> {
-  if (config.allowedUsers.length === 0) {
-    throw new Error('dsh-weixin: configure at least one allowed user')
+  let gateway: WeixinGateway | undefined
+  const startGateway = async (): Promise<void> => {
+    if (gateway !== undefined) return
+    const environmentToken = process.env[config.tokenEnv]?.trim()
+    const credential = await (pathExists(config.credentialPath).then(async exists => exists ? await readCredential(config.credentialPath) : undefined))
+    const token = environmentToken || credential?.token
+    if (token === undefined || token === '') return
+    const allowedUsers = config.allowedUsers.length > 0
+      ? config.allowedUsers
+      : credential?.userId === undefined || credential.userId === '' ? [] : [credential.userId]
+    if (allowedUsers.length === 0) return
+    gateway = new WeixinGateway(ctx, { ...config, allowedUsers }, {
+      token,
+      accountId: config.accountId ?? credential?.accountId,
+      apiBase: config.apiBase || credential?.apiBase || 'https://ilinkai.weixin.qq.com',
+    }, new GatewayStateStore(config.statePath, await loadGatewayState(config.statePath)))
+    gateway.start()
   }
-  const environmentToken = process.env[config.tokenEnv]?.trim()
-  const credential = environmentToken === undefined || environmentToken === ''
-    ? await (async () => {
-        if (!await pathExists(config.credentialPath)) {
-          throw new Error(`dsh-weixin: ${config.tokenEnv} is not set and ${config.credentialPath} does not exist; run dsh-weixin login`)
-        }
-        return await readCredential(config.credentialPath)
-      })()
-    : undefined
-  await ctx.get('loader')?.await()
-  const gatewayState = await loadGatewayState(config.statePath)
-  const gateway = new WeixinGateway(ctx, config, {
-    token: environmentToken ?? credential!.token,
-    accountId: config.accountId ?? credential?.accountId,
-    apiBase: config.apiBase || credential?.apiBase || 'https://ilinkai.weixin.qq.com',
-  }, new GatewayStateStore(config.statePath, gatewayState))
-  gateway.start()
-  ctx.effect(() => async () => { await gateway.dispose() })
+  mountLoginRoute(ctx, { credentialPath: config.credentialPath, apiBase: config.apiBase || undefined, onCredential: startGateway })
+  await startGateway()
+  if (gateway === undefined) process.stderr.write('dsh-weixin: connect at /dsh-weixin/login in Harness Web, or run npx dsh-weixin login --web.\n')
+  ctx.effect(() => async () => { await gateway?.dispose() })
 }
 
 export { ILinkClient } from './protocol.js'

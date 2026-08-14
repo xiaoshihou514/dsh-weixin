@@ -12,7 +12,7 @@ export interface GatewayState {
   chats: Record<string, string>
   seenMessageIds: string[]
   protocol: ILinkClientState
-  outbox: Record<string, { chunks: string[]; next: number }>
+  outbox: Record<string, { chunks: string[]; files: string[]; next: number; nextFile: number }>
 }
 
 /** Default gateway state file under the Harness home. */
@@ -63,7 +63,11 @@ export async function loadGatewayState(path: string): Promise<GatewayState> {
         const record = item as Record<string, unknown>
         if (!Array.isArray(record.chunks) || record.chunks.some(chunk => typeof chunk !== 'string')) throw new Error(`gateway state outbox.${chatId}.chunks must be strings`)
         if (!Number.isInteger(record.next) || (record.next as number) < 0 || (record.next as number) > record.chunks.length) throw new Error(`gateway state outbox.${chatId}.next is invalid`)
-        output[chatId] = { chunks: [...record.chunks], next: record.next as number }
+        const files = record.files === undefined ? [] : record.files
+        const nextFile = record.nextFile === undefined ? 0 : record.nextFile
+        if (!Array.isArray(files) || files.some(file => typeof file !== 'string')) throw new Error(`gateway state outbox.${chatId}.files must be strings`)
+        if (!Number.isInteger(nextFile) || (nextFile as number) < 0 || (nextFile as number) > files.length) throw new Error(`gateway state outbox.${chatId}.nextFile is invalid`)
+        output[chatId] = { chunks: [...record.chunks], files: [...files], next: record.next as number, nextFile: nextFile as number }
       }
       return output
     })(),
