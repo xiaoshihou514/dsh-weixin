@@ -48,9 +48,7 @@ describe('assembled plugin lifecycle', () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-default-agent-'))
     const followup = vi.fn()
     const session = { id: 'weixin-new-session', seq: 0, events: [] }
-    const planModeSet = vi.fn()
     const agentContext = new Context()
-    agentContext.provide('planMode', { set: planModeSet } as never)
     const agent = { id: session.id, status: 'idle', followup, cancel: vi.fn(), session, ctx: agentContext }
     const mount = vi.fn().mockResolvedValue(undefined)
     const create = vi.fn(async (options: { setup?: (agentCtx: Context) => Promise<void> }) => {
@@ -80,7 +78,6 @@ describe('assembled plugin lifecycle', () => {
     expect(mount).toHaveBeenCalledOnce()
     expect(create.mock.calls[0]?.[0]).toMatchObject({ meta: { cwd: directory } })
     expect(permissionSet).toHaveBeenCalledWith(session, 'workspace-write')
-    expect(planModeSet).toHaveBeenCalledWith(agent, false)
     expect(rename).toHaveBeenCalledWith(session, '微信')
 
     await context.fiber.dispose()

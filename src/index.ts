@@ -363,8 +363,7 @@ class WeixinGateway {
     if (permissionPresets === undefined) throw new Error('dsh-weixin: permissionPresets service is unavailable')
     permissionPresets.set(handle.agent.session, 'workspace-write')
     const planMode = handle.agent.ctx.get('planMode') as { set(agent: Agent, active: boolean): unknown } | undefined
-    if (planMode === undefined) throw new Error('dsh-weixin: default agent preset does not provide planMode')
-    planMode.set(handle.agent, false)
+    planMode?.set(handle.agent, false)
     const sessionTitle = this.#ctx.get('sessionTitle') as { rename(session: Agent['session'], title: string): unknown } | undefined
     if (sessionTitle === undefined) throw new Error('dsh-weixin: sessionTitle service is unavailable')
     sessionTitle.rename(handle.agent.session, '微信')
