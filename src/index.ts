@@ -414,7 +414,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     }, new GatewayStateStore(config.statePath, await loadGatewayState(config.statePath)))
     gateway.start()
   }
-  mountLoginRoute(ctx, { credentialPath: config.credentialPath, apiBase: config.apiBase || undefined, onCredential: startGateway })
+  const restartGateway = async (): Promise<void> => {
+    await gateway?.dispose()
+    gateway = undefined
+    await startGateway()
+  }
+  mountLoginRoute(ctx, { credentialPath: config.credentialPath, apiBase: config.apiBase || undefined, onCredential: restartGateway })
   await startGateway()
   if (gateway === undefined) process.stderr.write('dsh-weixin: connect at /dsh-weixin/login in Harness Web, or run npx dsh-weixin login --web.\n')
   ctx.effect(() => async () => { await gateway?.dispose() })

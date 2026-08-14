@@ -20,7 +20,7 @@ function isLoopback(address: string | undefined): boolean {
 export function mountLoginRoute(ctx: Context, options: LoginRouteOptions): void {
   let session: LoginSession | undefined
   let polling: Promise<{ done: boolean; ok: boolean; message: string }> | undefined
-  const status = async (): Promise<{ done: boolean; ok: boolean; message: string; needsCode?: boolean }> => {
+  const status = async (): Promise<{ done: boolean; ok: boolean; message: string; needsCode?: boolean; refresh?: boolean }> => {
     if (session === undefined) return { done: false, ok: false, message: '请打开登录页面开始连接。' }
     if (polling !== undefined) return await polling
     polling = (async () => {
@@ -33,8 +33,8 @@ export function mountLoginRoute(ctx: Context, options: LoginRouteOptions): void 
           return { done: true, ok: true, message: '连接成功，可以关闭此页面。' }
         }
         if (result.status === 'expired') {
-          session = undefined
-          return { done: true, ok: false, message: '二维码已过期，请刷新页面重试。' }
+          session = await startLoginSession({ apiBase: options.apiBase })
+          return { done: false, ok: false, refresh: true, message: '二维码已过期，正在刷新…' }
         }
         if (result.status === 'needs-code') return { done: false, ok: false, needsCode: true, message: '请输入手机微信显示的数字。' }
         if (result.status === 'code-blocked') return { done: false, ok: false, needsCode: true, message: '输入错误次数过多，请稍后重新扫码。' }

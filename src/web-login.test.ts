@@ -18,7 +18,39 @@ describe('browser login page', () => {
     expect(page).toContain('aria-label="微信登录二维码"')
     expect(page).toContain('<path d="M')
     expect(page).toContain('扫码连接微信')
+    expect(page).toContain('void poll()')
+    expect(page).toContain('window.location.reload()')
+    expect(page).not.toContain('setInterval')
     expect(page).not.toContain('Connect Weixin')
+  })
+
+  it('replaces an expired QR session and tells the browser to reload it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-web-refresh-'))
+    const routes: any[] = []
+    const context = new Context()
+    context.provide('webServer', { register: (route: unknown) => { routes.push(route); return () => undefined } } as never)
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ qrcode: 'old-key', qrcode_img_content: 'https://example.test/old' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'expired' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ qrcode: 'new-key', qrcode_img_content: 'https://example.test/new' })))
+    vi.stubGlobal('fetch', fetch)
+    mountLoginRoute(context, { credentialPath: join(directory, 'account.json'), onCredential: vi.fn() })
+    await vi.waitFor(() => { expect(routes).toHaveLength(1) })
+    const route = routes[0]
+    const response = () => {
+      const chunks: string[] = []
+      return { chunks, value: { setHeader: vi.fn(), writeHead: vi.fn().mockReturnThis(), end: (chunk?: unknown) => { chunks.push(String(chunk ?? '')) } } }
+    }
+    const page = response()
+    await route.handler({ url: '/dsh-weixin/login', socket: { remoteAddress: '127.0.0.1' } }, page.value)
+    const status = response()
+    await route.handler({ url: '/dsh-weixin/status', socket: { remoteAddress: '127.0.0.1' } }, status.value)
+    expect(JSON.parse(status.chunks.join(''))).toMatchObject({ done: false, refresh: true })
+    const refreshed = response()
+    await route.handler({ url: '/dsh-weixin/login', socket: { remoteAddress: '127.0.0.1' } }, refreshed.value)
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(refreshed.chunks.join('')).not.toEqual(page.chunks.join(''))
+    await context.fiber.dispose()
   })
 
   it('does not permit QR content to break out of the script', () => {
