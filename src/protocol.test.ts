@@ -39,7 +39,12 @@ describe('ILinkClient', () => {
     await client.sendText('room-1', 'world')
 
     const [, init] = fetch.mock.calls[1] as [string, RequestInit]
+    expect(JSON.parse(String((fetch.mock.calls[0]?.[1] as RequestInit).body)).base_info).toEqual({
+      channel_version: '2.2.0',
+      bot_agent: 'DeepSeek',
+    })
     expect(JSON.parse(String(init.body))).toMatchObject({
+      base_info: { channel_version: '2.2.0', bot_agent: 'DeepSeek' },
       msg: {
         to_user_id: 'room-1',
         context_token: 'context-1',

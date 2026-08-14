@@ -21,7 +21,7 @@ import { mountLoginRoute } from './web-route.js'
 export const name = 'weixin'
 
 /** Harness services needed to create and drive remote agents. */
-export const inject = ['agentDefaultModel', 'agents', 'sessions', 'sessionTitle']
+export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'permissionPresets', 'sessions', 'sessionTitle']
 
 /** Weixin gateway configuration. */
 export interface Config {
@@ -321,7 +321,10 @@ class WeixinGateway {
     const existing = this.#chats.get(chatId)
     if (existing !== undefined) return existing
     const selection = this.#ctx.agentDefaultModel.currentSelection()
-    const setup = (agentCtx: Context): void => {
+    const setup = async (agentCtx: Context): Promise<void> => {
+      const agentPresets = this.#ctx.get('agentPresets') as { mount(agentCtx: Context): Promise<unknown> } | undefined
+      if (agentPresets === undefined) throw new Error('dsh-weixin: agentPresets service is unavailable')
+      await agentPresets.mount(agentCtx)
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
       installSelection(agentCtx, selected, [
         'This session is connected to a Weixin chat and is visible in the Harness web UI.',
@@ -356,9 +359,15 @@ class WeixinGateway {
       handle = await this.#createAgent(selection, setup)
     }
     const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve(), typing: Promise.resolve() }
+    const permissionPresets = this.#ctx.get('permissionPresets') as { set(session: Agent['session'], name: string): void } | undefined
+    if (permissionPresets === undefined) throw new Error('dsh-weixin: permissionPresets service is unavailable')
+    permissionPresets.set(handle.agent.session, 'workspace-write')
+    const planMode = handle.agent.ctx.get('planMode') as { set(agent: Agent, active: boolean): unknown } | undefined
+    if (planMode === undefined) throw new Error('dsh-weixin: default agent preset does not provide planMode')
+    planMode.set(handle.agent, false)
     const sessionTitle = this.#ctx.get('sessionTitle') as { rename(session: Agent['session'], title: string): unknown } | undefined
     if (sessionTitle === undefined) throw new Error('dsh-weixin: sessionTitle service is unavailable')
-    sessionTitle.rename(handle.agent.session, 'DeepSeek')
+    sessionTitle.rename(handle.agent.session, '微信')
     this.#chats.set(chatId, state)
     this.#agentChats.set(handle.agent, chatId)
     this.#store.state.chats[chatId] = handle.agent.id
@@ -366,7 +375,7 @@ class WeixinGateway {
     return state
   }
 
-  async #createAgent(selection: { provider: string; model: string }, setup: (agentCtx: Context) => void): Promise<AgentHandle> {
+  async #createAgent(selection: { provider: string; model: string }, setup: (agentCtx: Context) => Promise<void>): Promise<AgentHandle> {
     return await this.#ctx.agents.create({
       sessionId: sessionId(`weixin-${randomUUID()}`),
       meta: { cwd: this.#config.workspace },

@@ -16,6 +16,11 @@ import {
 
 const CHANNEL_VERSION = '2.2.0'
 const CLIENT_VERSION = (2 << 16) | (2 << 8)
+const BOT_AGENT = 'DeepSeek'
+
+function baseInfo(): { channel_version: string; bot_agent: string } {
+  return { channel_version: CHANNEL_VERSION, bot_agent: BOT_AGENT }
+}
 
 interface ILinkTextItem {
   type: number
@@ -137,7 +142,7 @@ export class ILinkClient {
   async poll(signal: AbortSignal): Promise<InboundMessage[]> {
     const result = await this.#post<UpdatesResponse>('/ilink/bot/getupdates', {
       get_updates_buf: this.#updatesBuffer,
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
     }, signal)
     this.#assertSuccess(result, 'getupdates')
     let stateChanged = false
@@ -204,7 +209,7 @@ export class ILinkClient {
     const config = await this.#post<ConfigResponse>('/ilink/bot/getconfig', {
       ilink_user_id: chatId,
       ...(contextToken === undefined ? {} : { context_token: contextToken }),
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
     }, requestSignal)
     this.#assertSuccess(config, 'getconfig')
     if (config.typing_ticket === undefined || config.typing_ticket === '') throw new Error('getconfig omitted typing_ticket')
@@ -212,7 +217,7 @@ export class ILinkClient {
       ilink_user_id: chatId,
       typing_ticket: config.typing_ticket,
       status: typing ? 1 : 2,
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
     }, requestSignal)
     this.#assertSuccess(result, 'sendtyping')
   }
@@ -233,7 +238,7 @@ export class ILinkClient {
       filesize: paddedSize(data.byteLength),
       no_need_thumb: true,
       aeskey: key.toString('hex'),
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
     }, signal)
     this.#assertSuccess(upload, 'getuploadurl')
     const uploadUrl = upload.upload_full_url?.trim() || (upload.upload_param === undefined ? '' : `${this.#cdnBase}/upload?encrypted_query_param=${encodeURIComponent(upload.upload_param)}&filekey=${encodeURIComponent(filekey)}`)
@@ -266,7 +271,7 @@ export class ILinkClient {
     const contextToken = this.#contextTokens.get(chatId)
     if (contextToken !== undefined) msg.context_token = contextToken
     const result = await this.#post<UpdatesResponse>('/ilink/bot/sendmessage', {
-      base_info: { channel_version: CHANNEL_VERSION },
+      base_info: baseInfo(),
       msg,
     }, signal)
     try {

@@ -16,6 +16,78 @@ afterEach(async () => {
 })
 
 describe('assembled plugin lifecycle', () => {
+  it('creates Weixin sessions with the configured default agent preset', async () => {
+    let polls = 0
+    const server = createServer((request, response) => {
+      response.setHeader('content-type', 'application/json')
+      if (request.url === '/ilink/bot/getupdates') {
+        polls += 1
+        response.end(JSON.stringify({
+          ret: 0,
+          get_updates_buf: `cursor-${polls}`,
+          msgs: polls === 1 ? [{
+            message_id: 'message-1', from_user_id: 'owner', context_token: 'context-1',
+            item_list: [{ type: 1, text_item: { text: 'inspect the workspace' } }],
+          }] : [],
+        }))
+        return
+      }
+      if (request.url === '/ilink/bot/getconfig') {
+        response.end(JSON.stringify({ ret: 0, typing_ticket: 'typing-1' }))
+        return
+      }
+      if (request.url === '/ilink/bot/sendtyping') {
+        response.end(JSON.stringify({ ret: 0 }))
+        return
+      }
+      response.writeHead(404).end()
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('test server did not bind TCP')
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-default-agent-'))
+    const followup = vi.fn()
+    const session = { id: 'weixin-new-session', seq: 0, events: [] }
+    const planModeSet = vi.fn()
+    const agentContext = new Context()
+    agentContext.provide('planMode', { set: planModeSet } as never)
+    const agent = { id: session.id, status: 'idle', followup, cancel: vi.fn(), session, ctx: agentContext }
+    const mount = vi.fn().mockResolvedValue(undefined)
+    const create = vi.fn(async (options: { setup?: (agentCtx: Context) => Promise<void> }) => {
+      if (options.setup !== undefined) await options.setup(agentContext)
+      return { agent, dispose: vi.fn().mockResolvedValue(undefined) }
+    })
+    const context = new Context()
+    contexts.push(context)
+    context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
+    context.provide('agentPresets', { mount } as never)
+    context.provide('agents', { get: () => undefined, create, resume: vi.fn() } as never)
+    const permissionSet = vi.fn()
+    context.provide('permissionPresets', { set: permissionSet } as never)
+    context.provide('sessions', { flush: () => Promise.resolve() } as never)
+    const rename = vi.fn()
+    context.provide('sessionTitle', { rename } as never)
+    vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
+
+    await apply(context, {
+      tokenEnv: 'TEST_WEIXIN_TOKEN', credentialPath: join(directory, 'credential.json'), statePath: join(directory, 'state.json'),
+      accountId: 'bot', apiBase: `http://127.0.0.1:${address.port}`, cdnBase: 'https://novac2c.cdn.weixin.qq.com/c2c',
+      workspace: directory, mediaDir: '', allowedUsers: ['owner'], allowedGroups: [], retryDelayMs: 100,
+      emptyPollDelayMs: 20, maxMessageChars: 3_500, maxMediaBytes: 1024 * 1024,
+    })
+
+    await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
+    expect(mount).toHaveBeenCalledOnce()
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ meta: { cwd: directory } })
+    expect(permissionSet).toHaveBeenCalledWith(session, 'workspace-write')
+    expect(planModeSet).toHaveBeenCalledWith(agent, false)
+    expect(rename).toHaveBeenCalledWith(session, '微信')
+
+    await context.fiber.dispose()
+    contexts.splice(contexts.indexOf(context), 1)
+    await new Promise<void>((resolve, reject) => server.close(error => { if (error === undefined) resolve(); else reject(error) }))
+  })
+
   it('polls through Cordis and stops when its fiber is disposed', async () => {
     let polls = 0
     const server = createServer((request, response) => {
@@ -37,7 +109,9 @@ describe('assembled plugin lifecycle', () => {
     // Loader completion includes this plugin and would deadlock production boot.
     context.provide('loader', { await: () => new Promise<void>(() => undefined) } as never)
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
+    context.provide('agentPresets', { mount: vi.fn().mockResolvedValue(undefined) } as never)
     context.provide('agents', { get: () => undefined } as never)
+    context.provide('permissionPresets', { set: vi.fn() } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     context.provide('sessionTitle', { rename: vi.fn() } as never)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
@@ -104,16 +178,23 @@ describe('assembled plugin lifecycle', () => {
       outbox: {},
     })
     const followup = vi.fn()
+    const planModeSet = vi.fn()
+    const agentContext = new Context()
+    agentContext.provide('planMode', { set: planModeSet } as never)
     const active = {
       id: 'weixin-existing-session', status: 'idle', followup, cancel: vi.fn(),
       session: { id: 'weixin-existing-session', seq: 0, events: [] },
+      ctx: agentContext,
     }
     const create = vi.fn()
     const resume = vi.fn()
     const context = new Context()
     contexts.push(context)
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
+    context.provide('agentPresets', { mount: vi.fn().mockResolvedValue(undefined) } as never)
     context.provide('agents', { get: (id: string) => id === active.id ? active : undefined, create, resume } as never)
+    const permissionSet = vi.fn()
+    context.provide('permissionPresets', { set: permissionSet } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     const rename = vi.fn()
     context.provide('sessionTitle', { rename } as never)
@@ -128,7 +209,9 @@ describe('assembled plugin lifecycle', () => {
     await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
     expect(create).not.toHaveBeenCalled()
     expect(resume).not.toHaveBeenCalled()
-    expect(rename).toHaveBeenCalledWith(active.session, 'DeepSeek')
+    expect(rename).toHaveBeenCalledWith(active.session, '微信')
+    expect(permissionSet).toHaveBeenCalledWith(active.session, 'workspace-write')
+    expect(planModeSet).toHaveBeenCalledWith(active, false)
     expect(followup.mock.calls[0]?.[0]).toMatchObject({ content: [{ type: 'text', text: 'continue from Weixin' }] })
 
     await context.fiber.dispose()
@@ -163,7 +246,9 @@ describe('assembled plugin lifecycle', () => {
     contexts.push(context)
     context.provide('loader', { await: () => new Promise<void>(() => undefined) } as never)
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
+    context.provide('agentPresets', { mount: vi.fn().mockResolvedValue(undefined) } as never)
     context.provide('agents', { get: () => undefined } as never)
+    context.provide('permissionPresets', { set: vi.fn() } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     context.provide('sessionTitle', { rename: vi.fn() } as never)
     vi.stubEnv('MISSING_WEIXIN_TOKEN', '')
