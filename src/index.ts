@@ -1,6 +1,7 @@
 /** Weixin remote-control bundle for DeepSeek Harness. */
 
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
@@ -20,7 +21,7 @@ import { mountLoginRoute } from './web-route.js'
 export const name = 'weixin'
 
 /** Harness services needed to create and drive remote agents. */
-export const inject = ['agentDefaultModel', 'agents', 'sessions']
+export const inject = ['agentDefaultModel', 'agents', 'sessions', 'sessionTitle']
 
 /** Weixin gateway configuration. */
 export interface Config {
@@ -48,7 +49,7 @@ export const Config: z<Config> = z.object({
   accountId: z.string(),
   apiBase: z.string().default(''),
   cdnBase: z.string().default('https://novac2c.cdn.weixin.qq.com/c2c'),
-  workspace: z.string().required(),
+  workspace: z.string().default(homedir()),
   mediaDir: z.string().default(''),
   allowedUsers: z.array(String).default([]),
   allowedGroups: z.array(String).default([]),
@@ -355,6 +356,9 @@ class WeixinGateway {
       handle = await this.#createAgent(selection, setup)
     }
     const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve(), typing: Promise.resolve() }
+    const sessionTitle = this.#ctx.get('sessionTitle') as { rename(session: Agent['session'], title: string): unknown } | undefined
+    if (sessionTitle === undefined) throw new Error('dsh-weixin: sessionTitle service is unavailable')
+    sessionTitle.rename(handle.agent.session, 'DeepSeek')
     this.#chats.set(chatId, state)
     this.#agentChats.set(handle.agent, chatId)
     this.#store.state.chats[chatId] = handle.agent.id

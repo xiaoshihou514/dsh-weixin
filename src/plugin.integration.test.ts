@@ -39,6 +39,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
     context.provide('agents', { get: () => undefined } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
+    context.provide('sessionTitle', { rename: vi.fn() } as never)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
     const config: Config = {
       tokenEnv: 'TEST_WEIXIN_TOKEN',
@@ -114,6 +115,8 @@ describe('assembled plugin lifecycle', () => {
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
     context.provide('agents', { get: (id: string) => id === active.id ? active : undefined, create, resume } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
+    const rename = vi.fn()
+    context.provide('sessionTitle', { rename } as never)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
     await apply(context, {
       tokenEnv: 'TEST_WEIXIN_TOKEN', credentialPath: join(directory, 'credential.json'), statePath,
@@ -125,6 +128,7 @@ describe('assembled plugin lifecycle', () => {
     await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
     expect(create).not.toHaveBeenCalled()
     expect(resume).not.toHaveBeenCalled()
+    expect(rename).toHaveBeenCalledWith(active.session, 'DeepSeek')
     expect(followup.mock.calls[0]?.[0]).toMatchObject({ content: [{ type: 'text', text: 'continue from Weixin' }] })
 
     await context.fiber.dispose()
@@ -161,6 +165,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'provider', model: 'model' }) } as never)
     context.provide('agents', { get: () => undefined } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
+    context.provide('sessionTitle', { rename: vi.fn() } as never)
     vi.stubEnv('MISSING_WEIXIN_TOKEN', '')
 
     await apply(context, {
