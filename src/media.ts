@@ -28,6 +28,19 @@ export interface WireMediaItem {
 }
 
 const MEDIA_TYPES: Record<MediaKind, number> = { image: 1, video: 2, file: 3, voice: 4 }
+const MIME_TYPES: Readonly<Record<string, string>> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.txt': 'text/plain', '.json': 'application/json',
+  '.zip': 'application/zip', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+}
+const DEFAULT_MEDIA_TYPES: Readonly<Record<MediaKind, string>> = {
+  image: 'application/octet-stream',
+  video: 'video/mp4',
+  voice: 'audio/silk',
+  file: 'application/octet-stream',
+}
 
 export function uploadMediaType(kind: MediaKind): number {
   return MEDIA_TYPES[kind]
@@ -56,14 +69,7 @@ export function decryptMedia(data: Uint8Array, encodedKey: string): Buffer {
 
 export function mediaTypeForName(name: string, kind: MediaKind): string {
   const extension = extname(name).toLowerCase()
-  const known: Record<string, string> = {
-    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
-    '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
-    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.txt': 'text/plain', '.json': 'application/json',
-    '.zip': 'application/zip', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  }
-  return known[extension] ?? (kind === 'image' ? 'application/octet-stream' : kind === 'video' ? 'video/mp4' : kind === 'voice' ? 'audio/silk' : 'application/octet-stream')
+  return MIME_TYPES[extension] ?? DEFAULT_MEDIA_TYPES[kind]
 }
 
 export function safeFileName(input: string, fallback: string): string {

@@ -66,6 +66,22 @@ interface ChatState {
   typing: Promise<void>
 }
 
+interface AgentPresetService {
+  mount(agentCtx: Context): Promise<unknown>
+}
+
+interface PermissionPresetService {
+  set(session: Agent['session'], name: string): void
+}
+
+interface PlanModeService {
+  set(agent: Agent, active: boolean): unknown
+}
+
+interface SessionTitleService {
+  rename(session: Agent['session'], title: string): unknown
+}
+
 /** Split a response without breaking Unicode code points. */
 export function splitText(text: string, limit: number): string[] {
   const characters = Array.from(text)
@@ -322,7 +338,7 @@ class WeixinGateway {
     if (existing !== undefined) return existing
     const selection = this.#ctx.agentDefaultModel.currentSelection()
     const setup = async (agentCtx: Context): Promise<void> => {
-      const agentPresets = this.#ctx.get('agentPresets') as { mount(agentCtx: Context): Promise<unknown> } | undefined
+      const agentPresets = this.#ctx.get('agentPresets') as AgentPresetService | undefined
       if (agentPresets === undefined) throw new Error('dsh-weixin: agentPresets service is unavailable')
       await agentPresets.mount(agentCtx)
       const selected: ModelSelectionRef = { current: selection, assembled: undefined }
@@ -359,12 +375,12 @@ class WeixinGateway {
       handle = await this.#createAgent(selection, setup)
     }
     const state = { handle, sentThroughSeq: handle.agent.session.seq, delivery: Promise.resolve(), typing: Promise.resolve() }
-    const permissionPresets = this.#ctx.get('permissionPresets') as { set(session: Agent['session'], name: string): void } | undefined
+    const permissionPresets = this.#ctx.get('permissionPresets') as PermissionPresetService | undefined
     if (permissionPresets === undefined) throw new Error('dsh-weixin: permissionPresets service is unavailable')
     permissionPresets.set(handle.agent.session, 'workspace-write')
-    const planMode = handle.agent.ctx.get('planMode') as { set(agent: Agent, active: boolean): unknown } | undefined
+    const planMode = handle.agent.ctx.get('planMode') as PlanModeService | undefined
     planMode?.set(handle.agent, false)
-    const sessionTitle = this.#ctx.get('sessionTitle') as { rename(session: Agent['session'], title: string): unknown } | undefined
+    const sessionTitle = this.#ctx.get('sessionTitle') as SessionTitleService | undefined
     if (sessionTitle === undefined) throw new Error('dsh-weixin: sessionTitle service is unavailable')
     sessionTitle.rename(handle.agent.session, '微信')
     this.#chats.set(chatId, state)

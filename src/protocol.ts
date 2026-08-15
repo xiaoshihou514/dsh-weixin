@@ -9,6 +9,7 @@ import {
   paddedSize,
   safeFileName,
   uploadMediaType,
+  type CdnMediaRef,
   type InboundMedia,
   type MediaKind,
   type WireMediaItem,
@@ -67,6 +68,35 @@ interface UploadResponse extends UpdatesResponse {
 
 interface ConfigResponse extends UpdatesResponse {
   typing_ticket?: string
+}
+
+interface DownloadSpec {
+  kind: MediaKind
+  ref?: CdnMediaRef
+  key?: string
+  name: string
+}
+
+function downloadSpec(item: ILinkTextItem): DownloadSpec | undefined {
+  switch (item.type) {
+    case 2:
+      return {
+        kind: 'image',
+        ref: item.image_item?.media,
+        key: item.image_item?.aeskey === undefined
+          ? item.image_item?.media?.aes_key
+          : Buffer.from(item.image_item.aeskey, 'hex').toString('base64'),
+        name: 'image.jpg',
+      }
+    case 3:
+      return { kind: 'voice', ref: item.voice_item?.media, key: item.voice_item?.media?.aes_key, name: 'voice.silk' }
+    case 4:
+      return { kind: 'file', ref: item.file_item?.media, key: item.file_item?.media?.aes_key, name: safeFileName(item.file_item?.file_name ?? '', 'file.bin') }
+    case 5:
+      return { kind: 'video', ref: item.video_item?.media, key: item.video_item?.media?.aes_key, name: 'video.mp4' }
+    default:
+      return undefined
+  }
 }
 
 const MAX_RESPONSE_CHARS = 2 * 1024 * 1024
@@ -288,11 +318,7 @@ export class ILinkClient {
     const output: InboundMedia[] = []
     const errors: string[] = []
     for (const item of items) {
-      const spec = item.type === 2 ? { kind: 'image' as const, ref: item.image_item?.media, key: item.image_item?.aeskey === undefined ? item.image_item?.media?.aes_key : Buffer.from(item.image_item.aeskey, 'hex').toString('base64'), name: 'image.jpg' }
-        : item.type === 3 ? { kind: 'voice' as const, ref: item.voice_item?.media, key: item.voice_item?.media?.aes_key, name: 'voice.silk' }
-          : item.type === 4 ? { kind: 'file' as const, ref: item.file_item?.media, key: item.file_item?.media?.aes_key, name: safeFileName(item.file_item?.file_name ?? '', 'file.bin') }
-            : item.type === 5 ? { kind: 'video' as const, ref: item.video_item?.media, key: item.video_item?.media?.aes_key, name: 'video.mp4' }
-              : undefined
+      const spec = downloadSpec(item)
       if (spec === undefined || spec.ref === undefined) continue
       try {
         if (spec.key === undefined) throw new Error('media AES key is missing')
