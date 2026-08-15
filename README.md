@@ -9,6 +9,11 @@
 | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | <img src="https://github.com/user-attachments/assets/a9584da4-515b-4548-8636-4836fec9b1ac" /> | <img src="https://github.com/user-attachments/assets/4efa0f2d-605e-4e49-917e-4763d33cfde1" /> |
 
+```shell
+npm i -g @deepseek-ai/dsh
+dsh plugin --profile web add "github:xiaoshihou514/dsh-weixin#main"
+```
+
 [MIT](LICENSE)
 
 也看看我其他的插件吧～
