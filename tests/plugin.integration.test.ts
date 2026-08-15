@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apply } from './index.js'
-import type { Config } from './index.js'
-import { writePrivateJson } from './files.js'
+import { apply } from '../src/index.js'
+import type { Config } from '../src/index.js'
+import { writePrivateJson } from '../src/files.js'
 
 const contexts: Context[] = []
 

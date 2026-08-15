@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isAllowed, splitText } from './index.js'
-import type { Config } from './index.js'
+import { isAllowed, splitText } from '../src/index.js'
+import type { Config } from '../src/index.js'
 
 const config = {
   allowedUsers: ['user-1'],

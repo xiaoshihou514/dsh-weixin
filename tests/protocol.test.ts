@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ILinkClient } from './protocol.js'
-import { encryptMedia } from './media.js'
+import { ILinkClient } from '../src/protocol.js'
+import { encryptMedia } from '../src/media.js'
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), {

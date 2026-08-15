@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { GatewayStateStore, loadGatewayState } from './state.js'
+import { GatewayStateStore, loadGatewayState } from '../src/state.js'
 
 describe('gateway state', () => {
   it('persists routing and protocol state atomically', async () => {

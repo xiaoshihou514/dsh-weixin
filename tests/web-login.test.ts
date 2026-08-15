@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loginPageHtml } from './web-login.js'
-import { mountLoginRoute } from './web-route.js'
+import { loginPageHtml } from '../src/web-login.js'
+import { mountLoginRoute } from '../src/web-route.js'
 
 afterEach(() => {
   vi.unstubAllGlobals()

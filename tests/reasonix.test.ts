@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { findReasonixAccountFiles, readReasonixCredential } from './reasonix.js'
+import { findReasonixAccountFiles, readReasonixCredential } from '../src/reasonix.js'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -39,7 +39,7 @@ describe('reasonix credential import', () => {
   it('resolves the default accounts directory under the configured home', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-reasonix-home-'))
     vi.stubEnv('HOME', directory)
-    const { defaultReasonixAccountsDir } = await import('./reasonix.js')
+    const { defaultReasonixAccountsDir } = await import('../src/reasonix.js')
     expect(defaultReasonixAccountsDir()).toBe(join(directory, '.reasonix', 'weixin', 'accounts'))
   })
 })

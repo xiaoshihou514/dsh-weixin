@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionId, textUserMessage } from './harness.js'
+import { sessionId, textUserMessage } from '../src/harness.js'
 
 describe('Harness adapters', () => {
   it('brands session ids without changing their value', () => {

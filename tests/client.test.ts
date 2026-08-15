@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { apply, inject } from './client.js'
+import { apply, inject } from '../src/client.js'
 
 describe('Weixin settings card', () => {
   it('registers in the native configurable plugins slot', () => {

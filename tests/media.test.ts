@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { decryptMedia, encryptMedia, extractFileDirectives, paddedSize, resolveWorkspaceFile, safeFileName } from './media.js'
+import { decryptMedia, encryptMedia, extractFileDirectives, paddedSize, resolveWorkspaceFile, safeFileName } from '../src/media.js'
 
 describe('Weixin media helpers', () => {
   it('round trips AES-128-ECB media with both observed key encodings', () => {

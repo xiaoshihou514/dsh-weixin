@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { collectLocalBotTokens, login, pollLoginSession, startLoginSession } from './login.js'
-import { readPrivateJson } from './files.js'
-import type { StoredCredential } from './files.js'
+import { collectLocalBotTokens, login, pollLoginSession, startLoginSession } from '../src/login.js'
+import { readPrivateJson } from '../src/files.js'
+import type { StoredCredential } from '../src/files.js'
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200 })
