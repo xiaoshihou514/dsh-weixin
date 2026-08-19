@@ -4,3 +4,6 @@ dsh := env_var_or_default("DSH_BIN", "dsh")
 install:
     npm ci
     {{dsh}} plugin --profile web add "{{justfile_directory()}}"
+
+format:
+    prettier -w **/*.md **/*.js **/*.ts **/*.tsx **/*.css **/*.yaml **/*.json
