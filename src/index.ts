@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-attachment'
@@ -39,6 +40,7 @@ export interface Config {
   emptyPollDelayMs: number
   maxMessageChars: number
   maxMediaBytes: number
+  includeUsage: boolean
 }
 
 /** Validated plugin configuration. */
@@ -57,6 +59,7 @@ export const Config: z<Config> = z.object({
   emptyPollDelayMs: z.number().min(10).default(250),
   maxMessageChars: z.number().min(100).max(10_000).default(3_500),
   maxMediaBytes: z.number().min(1_024).max(512 * 1024 * 1024).default(100 * 1024 * 1024),
+  includeUsage: z.boolean().default(true),
 })
 
 interface ChatState {
@@ -102,19 +105,57 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function assistantText(events: readonly SessionEvent[], afterSeq: number): { text: string; seq: number } {
+/** Accumulate per-call usage across every assistant message in the window. */
+function accumulateUsage(usage: TokenUsage | undefined, next: TokenUsage): TokenUsage {
+  if (usage === undefined) return { ...next }
+  return {
+    inputTokens: usage.inputTokens + next.inputTokens,
+    outputTokens: usage.outputTokens + next.outputTokens,
+    ...(usage.cacheReadTokens !== undefined || next.cacheReadTokens !== undefined ? { cacheReadTokens: (usage.cacheReadTokens ?? 0) + (next.cacheReadTokens ?? 0) } : {}),
+    ...(usage.cacheWriteTokens !== undefined || next.cacheWriteTokens !== undefined ? { cacheWriteTokens: (usage.cacheWriteTokens ?? 0) + (next.cacheWriteTokens ?? 0) } : {}),
+    ...(usage.reasoningTokens !== undefined || next.reasoningTokens !== undefined ? { reasoningTokens: (usage.reasoningTokens ?? 0) + (next.reasoningTokens ?? 0) } : {}),
+  }
+}
+
+/** Chinese-style base-10^4 number, e.g. 12,345 → "1.23万", 123,456,789 → "1.23亿". */
+export function formatChineseNumber(value: number): string {
+  const absolute = Math.abs(value)
+  const sign = value < 0 ? '-' : ''
+  const trimmed = (text: string): string => text.replace(/\.?0+$/, '')
+  if (absolute >= 100_000_000) return `${sign}${trimmed((absolute / 100_000_000).toFixed(2))}亿`
+  if (absolute >= 10_000) return `${sign}${trimmed((absolute / 10_000).toFixed(2))}万`
+  return `${sign}${String(Math.trunc(value))}`
+}
+
+/** Human-readable one-line token accounting footer, e.g. "输入 1.2万 · 输出 56 · 缓存 789". */
+export function formatUsage(usage: TokenUsage): string {
+  const parts = [`输入 ${formatChineseNumber(usage.inputTokens)}`, `输出 ${formatChineseNumber(usage.outputTokens)}`]
+  if (usage.cacheReadTokens !== undefined && usage.cacheWriteTokens !== undefined) {
+    parts.push(`缓存读取 ${formatChineseNumber(usage.cacheReadTokens)}`, `缓存写入 ${formatChineseNumber(usage.cacheWriteTokens)}`)
+  } else if (usage.cacheReadTokens !== undefined) {
+    parts.push(`缓存 ${formatChineseNumber(usage.cacheReadTokens)}`)
+  } else if (usage.cacheWriteTokens !== undefined) {
+    parts.push(`缓存写入 ${formatChineseNumber(usage.cacheWriteTokens)}`)
+  }
+  return `词元用量:${parts.join(' · ')}`
+}
+
+/** Last assistant text plus the summed usage of every model call after `afterSeq`. Exported for tests. */
+export function assistantDelivery(events: readonly SessionEvent[], afterSeq: number): { text: string; seq: number; usage: TokenUsage | undefined } {
   let text = ''
   let seq = afterSeq
+  let usage: TokenUsage | undefined
   for (const event of events) {
     if (event.seq <= afterSeq) continue
     seq = Math.max(seq, event.seq)
     if (event.type !== 'assistant/message') continue
+    if (event.data.usage !== undefined) usage = accumulateUsage(usage, event.data.usage)
     text = event.data.message.content
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('')
   }
-  return { text, seq }
+  return { text, seq, usage }
 }
 
 export function isAllowed(message: InboundMessage, config: Config): boolean {
@@ -194,12 +235,16 @@ class WeixinGateway {
   async #deliver(chatId: string, state: ChatState): Promise<void> {
     await state.typing
     void this.#client.sendTyping(chatId, false, this.#abort.signal).catch(() => undefined)
-    const output = assistantText(state.handle.agent.session.events, state.sentThroughSeq)
+    const output = assistantDelivery(state.handle.agent.session.events, state.sentThroughSeq)
     if (output.text === '') {
       state.sentThroughSeq = output.seq
       return
     }
-    const delivery = extractFileDirectives(output.text)
+    let text = output.text
+    if (this.#config.includeUsage && output.usage !== undefined) {
+      text = `${text}\n\n—— ${formatUsage(output.usage)}`
+    }
+    const delivery = extractFileDirectives(text)
     const chunks = delivery.text === '' ? [] : splitText(delivery.text, this.#config.maxMessageChars)
     this.#store.state.outbox[chatId] = { chunks, files: delivery.files, next: 0, nextFile: 0 }
     await this.#store.save()

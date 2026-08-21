@@ -16,6 +16,7 @@ describe('login', () => {
   it('follows a regional redirect and saves a private credential', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-login-'))
     vi.stubEnv('HOME', directory)
+    vi.stubEnv('DSH_HOME', join(directory, '.dsh'))
     const credentialPath = join(directory, 'account.json')
     const fetch = vi.fn()
       .mockResolvedValueOnce(response({ qrcode: 'qr-1', qrcode_img_content: 'https://qr.test/1' }))
@@ -61,6 +62,7 @@ describe('login', () => {
   it('sends known local bot tokens in local_token_list so the scan can take over a bound account', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-login-tokens-'))
     vi.stubEnv('HOME', directory)
+    vi.stubEnv('DSH_HOME', join(directory, '.dsh'))
     const accounts = join(directory, '.reasonix', 'weixin', 'accounts')
     await mkdir(accounts, { recursive: true })
     await writeFile(join(accounts, 'old-bot@im.bot.json'), JSON.stringify({
@@ -78,6 +80,7 @@ describe('login', () => {
   it('adopts the existing binding when the server reports already-bound', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-weixin-login-adopt-'))
     vi.stubEnv('HOME', directory)
+    vi.stubEnv('DSH_HOME', join(directory, '.dsh'))
     const accounts = join(directory, '.reasonix', 'weixin', 'accounts')
     await mkdir(accounts, { recursive: true })
     await writeFile(join(accounts, 'old-bot@im.bot.json'), JSON.stringify({

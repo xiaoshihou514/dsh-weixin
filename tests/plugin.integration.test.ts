@@ -72,6 +72,7 @@ describe('assembled plugin lifecycle', () => {
       accountId: 'bot', apiBase: `http://127.0.0.1:${address.port}`, cdnBase: 'https://novac2c.cdn.weixin.qq.com/c2c',
       workspace: directory, mediaDir: '', allowedUsers: ['owner'], allowedGroups: [], retryDelayMs: 100,
       emptyPollDelayMs: 20, maxMessageChars: 3_500, maxMediaBytes: 1024 * 1024,
+      includeUsage: true,
     })
 
     await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
@@ -124,6 +125,7 @@ describe('assembled plugin lifecycle', () => {
       retryDelayMs: 100,
       emptyPollDelayMs: 20,
       maxMessageChars: 3_500,
+      includeUsage: true,
     }
 
     await apply(context, config)
@@ -201,6 +203,7 @@ describe('assembled plugin lifecycle', () => {
       accountId: 'bot', apiBase: `http://127.0.0.1:${address.port}`, cdnBase: 'https://novac2c.cdn.weixin.qq.com/c2c',
       workspace: directory, mediaDir: '', allowedUsers: ['owner'], allowedGroups: [], retryDelayMs: 100,
       emptyPollDelayMs: 20, maxMessageChars: 3_500, maxMediaBytes: 1024 * 1024,
+      includeUsage: true,
     })
 
     await vi.waitFor(() => { expect(followup).toHaveBeenCalledOnce() })
@@ -263,6 +266,7 @@ describe('assembled plugin lifecycle', () => {
       retryDelayMs: 100,
       emptyPollDelayMs: 20,
       maxMessageChars: 3_500,
+      includeUsage: true,
     })
 
     // A saved Reasonix account alone must not start the gateway; only the QR
