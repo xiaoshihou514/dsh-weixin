@@ -10,8 +10,7 @@ interface WeixinCardFace {
 
 interface SlotRegistration<T> {
   name: 'settings.plugin.item'
-  id: string
-  order: number
+  key: string
   inject: () => T
 }
 
@@ -91,8 +90,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.plugin.item', function* () {
     yield ctx.slots.register({
       name: 'settings.plugin.item',
-      id: 'dsh-weixin',
-      order: 30,
+      key: 'dsh-weixin',
       inject: () => face,
     }, WeixinCard)
   })

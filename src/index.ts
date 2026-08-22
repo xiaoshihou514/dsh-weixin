@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ILinkClient } from './protocol.js'
 import type { InboundMessage } from './protocol.js'
 import { defaultCredentialPath, pathExists, readCredential } from './files.js'
@@ -22,7 +23,10 @@ import { mountLoginRoute } from './web-route.js'
 export const name = 'weixin'
 
 /** Harness services needed to create and drive remote agents. */
-export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'permissionPresets', 'sessions', 'sessionTitle']
+export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'permissionPresets', 'sessions', 'sessionTitle', 'settings']
+
+/** 设置命名空间：仅作为“连接微信”卡片在插件配置标签页的派发键，凭据存在本地 credential 文件。 */
+const SETTINGS_NAMESPACE = settingsNamespace('dsh-weixin')
 
 /** Weixin gateway configuration. */
 export interface Config {
@@ -457,6 +461,7 @@ class WeixinGateway {
 
 /** Mount the Weixin gateway and tie it to the Cordis lifecycle. */
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  ctx.settings.register(SETTINGS_NAMESPACE, z.object({}))
   let gateway: WeixinGateway | undefined
   const startGateway = async (): Promise<void> => {
     if (gateway !== undefined) return

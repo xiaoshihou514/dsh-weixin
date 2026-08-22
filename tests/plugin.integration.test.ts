@@ -10,6 +10,10 @@ import { writePrivateJson } from '../src/files.js'
 
 const contexts: Context[] = []
 
+function provideSettings(context: Context): void {
+  context.provide('settings', { register: () => ({}) } as never)
+}
+
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map(async context => { await context.fiber.dispose() }))
   vi.unstubAllEnvs()
@@ -65,6 +69,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     const rename = vi.fn()
     context.provide('sessionTitle', { rename } as never)
+    provideSettings(context)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
 
     await apply(context, {
@@ -112,6 +117,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('permissionPresets', { set: vi.fn() } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     context.provide('sessionTitle', { rename: vi.fn() } as never)
+    provideSettings(context)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
     const config: Config = {
       tokenEnv: 'TEST_WEIXIN_TOKEN',
@@ -197,6 +203,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     const rename = vi.fn()
     context.provide('sessionTitle', { rename } as never)
+    provideSettings(context)
     vi.stubEnv('TEST_WEIXIN_TOKEN', 'token')
     await apply(context, {
       tokenEnv: 'TEST_WEIXIN_TOKEN', credentialPath: join(directory, 'credential.json'), statePath,
@@ -251,6 +258,7 @@ describe('assembled plugin lifecycle', () => {
     context.provide('permissionPresets', { set: vi.fn() } as never)
     context.provide('sessions', { flush: () => Promise.resolve() } as never)
     context.provide('sessionTitle', { rename: vi.fn() } as never)
+    provideSettings(context)
     vi.stubEnv('MISSING_WEIXIN_TOKEN', '')
 
     await apply(context, {

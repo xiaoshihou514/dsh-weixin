@@ -23,8 +23,7 @@ describe('Weixin settings card', () => {
     expect(slots.inject).toHaveBeenCalledWith('settings.plugin.item', expect.any(Function))
     expect(registration).toMatchObject({
       name: 'settings.plugin.item',
-      id: 'dsh-weixin',
-      order: 30,
+      key: 'dsh-weixin',
     })
     expect(registration?.inject).toBeTypeOf('function')
     expect(component).toBeTypeOf('function')
